@@ -41,6 +41,7 @@ dependencies = [
  "defmt 1.0.1",
  "embassy-executor",
  "embassy-net",
+ "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-graphics",
  "embedded-io 0.7.1",

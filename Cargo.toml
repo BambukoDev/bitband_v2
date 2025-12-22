@@ -69,6 +69,7 @@ esp-hal-smartled = { version ="0.17.0", features = ["esp32s3"]}
 smart-leds = "0.4.0"
 ssd1306 = "0.10.0"
 embedded-graphics = "0.8.1"
+embassy-sync = "0.7.2"
 
 [profile.dev]
 # Rust debug is too slow.
