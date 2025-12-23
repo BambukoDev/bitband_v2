@@ -6,7 +6,7 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio;
 use crate::top_bar::StatusBar;
-use crate::top_bar::STATUS_SIGNAL;
+use crate::top_bar::{TopBarMode, TOP_BAR_CH};
 
 #[embassy_executor::task]
 pub async fn battery_task() {
@@ -22,7 +22,12 @@ pub async fn battery_task() {
         };
 
         status.battery_percent = percent;
-        STATUS_SIGNAL.signal(status);
+        TOP_BAR_CH
+            .send(TopBarMode::Normal {
+                battery_percent: percent,
+                time_hhmm: (0, 0),
+            })
+            .await;
 
         Timer::after(Duration::from_secs(30)).await;
     }
