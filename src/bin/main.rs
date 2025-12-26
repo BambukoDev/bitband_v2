@@ -165,9 +165,9 @@ async fn main(spawner: Spawner) {
     //     Timer::after(Duration::from_secs(1)).await;
     // }
     
-    let btn_up = gpio::Input::new(peripherals.GPIO44, InputConfig::default().with_pull(gpio::Pull::Up));
+    let btn_up = gpio::Input::new(peripherals.GPIO1, InputConfig::default().with_pull(gpio::Pull::Up));
     let btn_down = gpio::Input::new(peripherals.GPIO43, InputConfig::default().with_pull(gpio::Pull::Up));
-    let btn_sel = gpio::Input::new(peripherals.GPIO1, InputConfig::default().with_pull(gpio::Pull::Up));
+    let btn_sel = gpio::Input::new(peripherals.GPIO44, InputConfig::default().with_pull(gpio::Pull::Up));
 
     let wifi_ctrl: &'static mut WifiController<'static> = Box::leak(Box::new(_wifi_controller));
 

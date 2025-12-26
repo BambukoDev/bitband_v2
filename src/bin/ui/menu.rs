@@ -45,9 +45,11 @@ pub enum MenuAction {
 pub enum MenuCommand {
     BleScan,
     WifiScan,
+    WifiDeauthSelected,
+    WifiClearSelected,
     ToggleBluetooth,
     Reboot,
-    EnterDynamic(&'static Menu), // for dynamically created menus
+    EnterDynamic(&'static Menu),
 }
 
 pub struct MenuItem {
@@ -71,12 +73,12 @@ pub static WIFI_ACTIONS_MENU: Menu = Menu {
         MenuItem {
             label: "Deauth Test",
             // action: MenuAction::Trigger(MenuCommand::WifiDeauthSelected),
-            action: MenuAction::Trigger(MenuCommand::Reboot),
+            action: MenuAction::Trigger(MenuCommand::WifiDeauthSelected),
         },
         MenuItem {
             label: "Clear Selection",
             // action: MenuAction::Trigger(MenuCommand::WifiClearSelected),
-            action: MenuAction::Trigger(MenuCommand::Reboot),
+            action: MenuAction::Trigger(MenuCommand::WifiClearSelected),
         },
     ],
 };
@@ -278,12 +280,18 @@ pub async fn menu_task(mut display: Display) {
             }
         }
 
-        if let MenuAction::WifiAp(ap) =
-            &state.current().items[state.selected].action
+        if let Some(MenuItem { action: MenuAction::WifiAp(ap), .. }) =
+            state.current().items.get(state.selected)
         {
-            MENU_MSG_CH
-                .send(MenuMsg::UpdateTopBar(TopBarMode::WifiAp { ssid: ap.ssid, rssi: ap.rssi, channel: ap.channel }))
-                .await;
+            let _ = MENU_MSG_CH.try_send(
+                MenuMsg::UpdateTopBar(
+                    TopBarMode::WifiAp {
+                        ssid: ap.ssid,
+                        rssi: ap.rssi,
+                        channel: ap.channel,
+                    }
+                )
+            );
         }
 
         render_menu(&mut display, &state, normal, inverted, VISIBLE_LINES);
@@ -352,30 +360,52 @@ fn render_menu(
 pub async fn radio_task() {
     loop {
         match MENU_CMD_CH.receive().await {
-            // MenuCommand::BleScan => {
-            //     info!("Starting BLE scan...");
-            //     // you can spawn the scan task here or handle BLE scan logic
-            // }
-            // MenuCommand::WifiScan => {
-            //     info!("Starting WiFi scan...");
-            //     // you can spawn the WiFi scan task here or handle WiFi scan logic
-            // }
+            MenuCommand::WifiDeauthSelected => {
+                if let Some(ap) = get_selected_ap() {
+                    wifi_deauth_test(ap).await;
+                } else {
+                    info!("No WiFi AP selected");
+                }
+            }
+
+            MenuCommand::WifiClearSelected => {
+                info!("WiFi selection cleared");
+            }
+
             MenuCommand::ToggleBluetooth => {
                 info!("Toggling Bluetooth");
-                // toggle BT hardware
             }
+
             MenuCommand::Reboot => {
                 esp_hal::system::software_reset();
             }
-            MenuCommand::EnterDynamic(menu) => {
-                // push the dynamic menu onto the stack
-                // if you want, you can also notify the menu_task via a separate channel
-                // but since menu_task now handles EnterDynamic in ButtonEvent::Select, you may not need extra handling here
-                info!("Dynamic menu ready: {}", menu.title);
-            }
+
             _ => {}
         }
     }
+}
+
+async fn wifi_deauth_test(ap: &'static WifiApInfo) {
+    info!(
+        "Deauth test requested for SSID='{}' CH={} RSSI={}",
+        ap.ssid,
+        ap.channel,
+        ap.rssi
+    );
+
+    // 1️⃣ Switch radio to AP channel (allowed)
+    // esp_wifi_set_channel(ap.channel, WIFI_SECOND_CHAN_NONE);
+
+    // 2️⃣ Placeholder: we CANNOT enumerate stations on ESP32
+    info!("ESP32 cannot enumerate stations of foreign APs");
+
+    // 3️⃣ Placeholder loop for future injector
+    for i in 0..5 {
+        info!("(stub) Would send deauth burst {}", i);
+        embassy_time::Timer::after_millis(100).await;
+    }
+
+    info!("Deauth test completed (stub)");
 }
 
 #[embassy_executor::task]
