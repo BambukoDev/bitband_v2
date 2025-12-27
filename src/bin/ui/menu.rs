@@ -369,6 +369,7 @@ pub async fn radio_task() {
             }
 
             MenuCommand::WifiClearSelected => {
+                // SELECTED_WIFI_AP.store(core::ptr::null(), Ordering::Relaxed);
                 info!("WiFi selection cleared");
             }
 

@@ -7,8 +7,10 @@
 )]
 // #![deny(clippy::large_stack_frames)]
 
+use core::cell::RefCell;
+
 use embassy_net::Config;
-use esp_hal::{gpio::{self, InputConfig}, i2c, ledc::channel, peripherals};
+use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, peripherals, spi};
 
 use bt_hci::controller::ExternalController;
 use defmt::info;
@@ -16,7 +18,6 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::rmt::Rmt;
-use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
@@ -32,6 +33,12 @@ use embedded_graphics::{
     prelude::*,
     text::{Baseline, Text}
 };
+
+use embedded_sdmmc::{SdCard, TimeSource, VolumeManager};
+use esp_hal::spi::master::Spi;
+use esp_hal::gpio::Output;
+use esp_hal::time::Rate;
+use embedded_hal_bus::spi::RefCellDevice;
 
 use alloc::{boxed::Box, string::String};
 
@@ -177,8 +184,47 @@ async fn main(spawner: Spawner) {
     spawner.spawn(services::battery::battery_task()).unwrap();
     spawner.spawn(ui::menu::radio_task()).unwrap();
     spawner.spawn(ui::menu::ble_scan_task()).unwrap();
-    spawner.spawn(ui::menu::wifi_scan_task(wifi_ctrl)).unwrap();
     // spawner.spawn(services::clock::clock_task()).unwrap();
+    spawner.spawn(ui::menu::wifi_scan_task(wifi_ctrl)).unwrap();
+
+    let cd = Input::new(peripherals.GPIO15, InputConfig::default().with_pull(Pull::Up));
+    let cs = Output::new(peripherals.GPIO10, gpio::Level::High, OutputConfig::default());
+    let sck = peripherals.GPIO12;
+    let mosi = peripherals.GPIO11;
+    let miso = peripherals.GPIO13;
+
+    let spi_bus_config = spi::master::Config::default()
+        .with_frequency(Rate::from_khz(400))
+        .with_mode(spi::Mode::_0);
+    let spi_bus = spi::master::Spi::new(peripherals.SPI2, spi_bus_config)
+        .expect("Failed to initialize SPI bus")
+        .with_mosi(mosi)
+        .with_miso(miso)
+        .with_sck(sck);
+    let shared_spi_bus = RefCell::new(spi_bus);
+    let spi_device = RefCellDevice::new(&shared_spi_bus, cs, esp_hal::delay::Delay::new())
+        .expect("Failed to create SPI device");
+
+    let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
+    let sd_size = sdcard.num_bytes();
+    if let Ok(bytes) = sd_size {
+        info!("SD card size: {} GiB", bytes / 1024 / 1024 / 1024);
+    } else {
+        info!("Failed to initialize SD card");
+    }
+
+    let volume_mgr = VolumeManager::new(sdcard, DummyTime);
+    let volume0 = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).expect("Failed to open volume 0");
+    let root_dir = volume0.open_root_dir().expect("Failed to open root directory");
+
+    shared_spi_bus.borrow_mut().apply_config(&spi::master::Config::default()
+        .with_frequency(Rate::from_mhz(2))
+        .with_mode(spi::Mode::_0)
+    ).expect("Failed to speed up the SD card");
+
+    let mut file = root_dir.open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrAppend)
+        .expect("Failed to create test.txt");
+    file.close().expect("Failed to close test.txt");
 
     loop {
         // info!("KEEPALIVE");
@@ -193,4 +239,20 @@ async fn main(spawner: Spawner) {
     // core::future::pending::<()>().await;
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
+}
+
+// TEMP FOR TESTING THE SD CARD
+struct DummyTime;
+
+impl TimeSource for DummyTime {
+    fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
+        embedded_sdmmc::Timestamp {
+            year_since_1970: 54,
+            zero_indexed_month: 0,
+            zero_indexed_day: 0,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        }
+    }
 }
