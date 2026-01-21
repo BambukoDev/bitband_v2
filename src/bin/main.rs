@@ -10,10 +10,11 @@
 use core::cell::RefCell;
 
 use embassy_net::Config;
-use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, peripherals, spi};
+use embedded_hal::{digital::{InputPin, OutputPin}, spi::{ErrorType, SpiBus}};
+use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, UsbBus}, peripherals, spi, DriverMode};
 
-use bt_hci::controller::ExternalController;
-use defmt::info;
+use bt_hci::{cmd::info, controller::ExternalController};
+use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
@@ -22,6 +23,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
 use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController}};
+use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 use smart_leds::{brightness, colors, SmartLedsWrite as _};
@@ -40,7 +42,10 @@ use esp_hal::gpio::Output;
 use esp_hal::time::Rate;
 use embedded_hal_bus::spi::RefCellDevice;
 
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, vec::Vec};
+
+use embassy_usb::class::hid::{HidWriter, HidReader, ReportId};
+use embassy_usb::Builder;
 
 mod input;
 mod services;
@@ -54,8 +59,11 @@ use services::clock;
 use ui::menu;
 use ui::top_bar;
 
+use embedded_hal_bus::spi::ExclusiveDevice;
+
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(p: &core::panic::PanicInfo) -> ! {
+    error!("Panicked: {}", p.message().as_str());
     loop {}
 }
 
@@ -146,7 +154,6 @@ async fn main(spawner: Spawner) {
     display_bot.flush().unwrap();
     info!("Bottom display initialized");
 
-
     // let text_style = MonoTextStyleBuilder::new()
     //     .font(&FONT_6X10)
     //     .text_color(BinaryColor::On)
@@ -182,10 +189,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(ui::menu::menu_task(display_bot)).unwrap();
     spawner.spawn(ui::top_bar::status_task(display_top)).unwrap();
     spawner.spawn(services::battery::battery_task()).unwrap();
-    spawner.spawn(ui::menu::radio_task()).unwrap();
-    spawner.spawn(ui::menu::ble_scan_task()).unwrap();
+    spawner.spawn(ui::menu::action_handler()).unwrap();
     // spawner.spawn(services::clock::clock_task()).unwrap();
-    spawner.spawn(ui::menu::wifi_scan_task(wifi_ctrl)).unwrap();
 
     let cd = Input::new(peripherals.GPIO15, InputConfig::default().with_pull(Pull::Up));
     let cs = Output::new(peripherals.GPIO10, gpio::Level::High, OutputConfig::default());
@@ -201,11 +206,16 @@ async fn main(spawner: Spawner) {
         .with_mosi(mosi)
         .with_miso(miso)
         .with_sck(sck);
-    let shared_spi_bus = RefCell::new(spi_bus);
-    let spi_device = RefCellDevice::new(&shared_spi_bus, cs, esp_hal::delay::Delay::new())
+    // let shared_spi_bus = RefCell::new(spi_bus);
+    // let spi_device = RefCellDevice::new(&shared_spi_bus, cs, esp_hal::delay::Delay::new())
+    //     .expect("Failed to create SPI device");
+    info!("SPI device created!");
+    let shared_spi_bus = Box::leak(Box::new(RefCell::new(spi_bus)));
+    let spi_device = RefCellDevice::new(shared_spi_bus, cs, esp_hal::delay::Delay::new())
         .expect("Failed to create SPI device");
 
     let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
+    
     let sd_size = sdcard.num_bytes();
     if let Ok(bytes) = sd_size {
         info!("SD card size: {} GiB", bytes / 1024 / 1024 / 1024);
@@ -213,18 +223,27 @@ async fn main(spawner: Spawner) {
         info!("Failed to initialize SD card");
     }
 
-    let volume_mgr = VolumeManager::new(sdcard, DummyTime);
+    let volume_mgr = SD_MGR.init(VolumeManager::new(sdcard, DummyTime));
     let volume0 = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).expect("Failed to open volume 0");
+    info!("Opened volume 0");
     let root_dir = volume0.open_root_dir().expect("Failed to open root directory");
+    info!("Opened root dir");
 
     shared_spi_bus.borrow_mut().apply_config(&spi::master::Config::default()
         .with_frequency(Rate::from_mhz(2))
         .with_mode(spi::Mode::_0)
     ).expect("Failed to speed up the SD card");
+    info!("Sped up the SD card");
 
     let mut file = root_dir.open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrAppend)
         .expect("Failed to create test.txt");
+    file.write("Amogus".as_bytes()).expect("Failed to write Amogus to test.txt");
     file.close().expect("Failed to close test.txt");
+    root_dir.close().expect("Failed to close root dir");
+    volume0.close().expect("Failed to close volume 0");
+    info!("File creation test successful");
+
+    spawner.spawn(services::ducky::ducky_task(volume_mgr)).unwrap();
 
     loop {
         // info!("KEEPALIVE");
@@ -256,3 +275,17 @@ impl TimeSource for DummyTime {
         }
     }
 }
+
+pub static SD_MGR: StaticCell<
+    VolumeManager<
+        SdCard<
+            RefCellDevice<
+                spi::master::Spi<'static, esp_hal::Blocking>,
+                Output<'static>,
+                esp_hal::delay::Delay
+            >,
+            esp_hal::delay::Delay
+        >,
+        DummyTime
+    >
+> = StaticCell::new();

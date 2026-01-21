@@ -21,8 +21,6 @@ use defmt::info;
 
 use alloc::format;
 
-use crate::menu::{WifiApInfo, get_selected_ap};
-
 #[derive(Copy, Clone)]
 pub struct StatusBar {
     pub battery_percent: u8,
@@ -40,7 +38,6 @@ pub static STATUS_SIGNAL: Signal<CriticalSectionRawMutex, StatusBar> =
 // >;
 
 pub enum TopInfo {
-    WifiAp(&'static WifiApInfo),
     Default,
 }
 
@@ -48,13 +45,7 @@ pub enum TopBarMode {
     Normal {
         battery_percent: u8,
         time_hhmm: (u8, u8),
-    },
-    WifiAp {
-        ssid: &'static str,
-        rssi: i8,
-        channel: u8,
-        // auth: AuthMethod,
-    },
+    }
 }
 
 pub static TOP_BAR_CH: Channel<
@@ -84,8 +75,6 @@ pub async fn status_task(mut display: Display) {
         if let Ok(msg) = TOP_BAR_CH.try_receive() {
             state = match msg {
                 TopBarMode::Normal { battery_percent, time_hhmm } => TopBarMode::Normal { battery_percent, time_hhmm },
-                TopBarMode::WifiAp { ssid, rssi, channel } =>
-                    TopBarMode::WifiAp { ssid, rssi, channel },
             };
         }
 
@@ -95,9 +84,6 @@ pub async fn status_task(mut display: Display) {
             TopBarMode::Normal {battery_percent, time_hhmm} => {
                 BatteryWidget.draw(&mut display, tick, style);
                 ClockWidget.draw(&mut display, tick, style);
-            }
-            TopBarMode::WifiAp { ssid, rssi, channel } => {
-                WifiApWidget.draw(&mut display, tick, style);
             }
         }
 
@@ -127,37 +113,6 @@ impl Widget for ClockWidget {
         // let (hh, mm) = get_time_hm(); // RTC helper
         let (hh, mm) = (0, 0);
         draw_text_at(display, &format!("{:02}:{:02}", hh, mm), 90, 0, style);
-    }
-}
-
-pub struct WifiApWidget;
-
-impl Widget for WifiApWidget {
-    fn draw(&mut self, display: &mut Display, tick: u32, style: MonoTextStyle<'_, BinaryColor>) {
-        if let Some(ap) = get_selected_ap() {
-            // SSID (scrolling)
-            draw_scrolling_text(
-                display,
-                ap.ssid,
-                0,
-                0,
-                128,
-                tick,
-                style,
-            );
-
-            // Metadata
-            draw_text_at(
-                display,
-                &format!("{}dBm  CH{}",
-                    0,
-                    // ap.signal_strenght,
-                    ap.channel),
-                0,
-                10,
-                style,
-            );
-        }
     }
 }
 

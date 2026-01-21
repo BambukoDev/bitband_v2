@@ -28,6 +28,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::button::*;
 use crate::top_bar::{TopBarMode, TOP_BAR_CH, draw_text_at};
+use crate::services::ducky::DUCKY_CH;
 
 const TITLE_HEIGHT: i32 = 8;
 const LINE_HEIGHT: i32 = 8;
@@ -37,16 +38,12 @@ const VISIBLE_LINES: usize =
 
 pub enum MenuAction {
     Enter(&'static Menu),
-    Trigger(MenuCommand),
-    WifiAp(&'static WifiApInfo),
+    Trigger(Action)
 }
 
 #[derive(Copy, Clone)]
-pub enum MenuCommand {
-    BleScan,
-    WifiScan,
-    WifiDeauthSelected,
-    WifiClearSelected,
+pub enum Action {
+    RunDuck(&'static str),
     ToggleBluetooth,
     Reboot,
     EnterDynamic(&'static Menu),
@@ -62,47 +59,12 @@ pub struct Menu {
     pub items: &'static [MenuItem],
 }
 
-pub static WIFI_ACTIONS_MENU: Menu = Menu {
-    title: "WiFi Actions",
-    items: &[
-        MenuItem {
-            label: "Connect",
-            // action: MenuAction::Trigger(MenuCommand::WifiConnectSelected),
-            action: MenuAction::Trigger(MenuCommand::Reboot),
-        },
-        MenuItem {
-            label: "Deauth Test",
-            // action: MenuAction::Trigger(MenuCommand::WifiDeauthSelected),
-            action: MenuAction::Trigger(MenuCommand::WifiDeauthSelected),
-        },
-        MenuItem {
-            label: "Clear Selection",
-            // action: MenuAction::Trigger(MenuCommand::WifiClearSelected),
-            action: MenuAction::Trigger(MenuCommand::WifiClearSelected),
-        },
-    ],
-};
-
 pub static SETTINGS_MENU: Menu = Menu {
     title: "Settings",
     items: &[
         MenuItem {
             label: "Bluetooth",
-            action: MenuAction::Trigger(MenuCommand::ToggleBluetooth),
-        },
-    ],
-};
-
-pub static RADIO_MENU: Menu = Menu {
-    title: "Radio Test",
-    items: &[
-        MenuItem {
-            label: "BLE Scan",
-            action: MenuAction::Trigger(MenuCommand::BleScan),
-        },
-        MenuItem {
-            label: "WiFi Scan",
-            action: MenuAction::Trigger(MenuCommand::WifiScan),
+            action: MenuAction::Trigger(Action::ToggleBluetooth),
         },
     ],
 };
@@ -111,24 +73,16 @@ pub static ROOT_MENU: Menu = Menu {
     title: "Main Menu",
     items: &[
         MenuItem {
-            label: "WiFi Scan",
-            action: MenuAction::Trigger(MenuCommand::WifiScan),
-        },
-        MenuItem {
-            label: "WiFi Actions",
-            action: MenuAction::Enter(&WIFI_ACTIONS_MENU),
+            label: "Run Payload",
+            action: MenuAction::Trigger(Action::RunDuck("PAYLOAD.DUC")),
         },
         MenuItem {
             label: "Settings",
             action: MenuAction::Enter(&SETTINGS_MENU),
         },
         MenuItem {
-            label: "Radio Test",
-            action: MenuAction::Enter(&RADIO_MENU),
-        },
-        MenuItem {
             label: "Reboot",
-            action: MenuAction::Trigger(MenuCommand::Reboot),
+            action: MenuAction::Trigger(Action::Reboot),
         },
     ],
 };
@@ -189,21 +143,9 @@ pub static MENU_MSG_CH: Channel<
 
 pub static MENU_CMD_CH: Channel<
     CriticalSectionRawMutex,
-    MenuCommand,
+    Action,
     4,
 > = Channel::new();
-
-pub static WIFI_SCAN_CH: Channel<CriticalSectionRawMutex, (), 1> = Channel::new();
-
-pub struct WifiApInfo {
-    pub ssid: &'static str,
-    pub rssi: i8,
-    pub channel: u8,
-    // pub auth: AuthMethod,
-}
-
-static SELECTED_WIFI_AP: AtomicPtr<WifiApInfo> =
-    AtomicPtr::new(core::ptr::null_mut());
 
 type Display = ssd1306::Ssd1306<ssd1306::prelude::I2CInterface<esp_hal::i2c::master::I2c<'static, esp_hal::Blocking>>, DisplaySize128x32, BufferedGraphicsMode<DisplaySize128x32>>;
 
@@ -249,15 +191,9 @@ pub async fn menu_task(mut display: Display) {
             }
             ButtonEvent::Select => {
                 match state.current().items[state.selected].action {
-                    MenuAction::WifiAp(ap) => {
-                        set_selected_ap(ap);
-                    }
                     MenuAction::Enter(sub) => state.enter(sub),
                     MenuAction::Trigger(cmd) => match cmd {
-                        MenuCommand::WifiScan => {
-                            WIFI_SCAN_CH.send(()).await;
-                        }
-                        MenuCommand::EnterDynamic(menu) => state.enter(menu),
+                        Action::EnterDynamic(menu) => state.enter(menu),
                         _ => {
                             MENU_CMD_CH.send(cmd).await;
                         }
@@ -265,7 +201,6 @@ pub async fn menu_task(mut display: Display) {
                 }
             }
             ButtonEvent::Back => state.back(),
-            _ => {}
         }
 
         // scrolling logic
@@ -278,20 +213,6 @@ pub async fn menu_task(mut display: Display) {
                     TOP_BAR_CH.send(info).await;
                 }
             }
-        }
-
-        if let Some(MenuItem { action: MenuAction::WifiAp(ap), .. }) =
-            state.current().items.get(state.selected)
-        {
-            let _ = MENU_MSG_CH.try_send(
-                MenuMsg::UpdateTopBar(
-                    TopBarMode::WifiAp {
-                        ssid: ap.ssid,
-                        rssi: ap.rssi,
-                        channel: ap.channel,
-                    }
-                )
-            );
         }
 
         render_menu(&mut display, &state, normal, inverted, VISIBLE_LINES);
@@ -322,20 +243,6 @@ fn render_menu(
         }
         let y = TITLE_HEIGHT + i as i32 * LINE_HEIGHT;
 
-        let is_selected_ap = match (
-            &menu.items[idx].action,
-            get_selected_ap(),
-        ) {
-            (MenuAction::WifiAp(ap), Some(sel)) => core::ptr::eq(*ap, sel),
-            _ => false,
-        };
-
-        let label = if is_selected_ap {
-            alloc::format!("* {}", menu.items[idx].label)
-        } else {
-            alloc::format!("{}", menu.items[idx].label)
-        };
-
         if idx == state.selected {
 
             Rectangle::new(Point::new(0, y), Size::new(128, LINE_HEIGHT as u32))
@@ -343,11 +250,11 @@ fn render_menu(
                 .draw(display)
                 .unwrap();
 
-            Text::with_baseline(label.as_str(), Point::new(0, y), inverted, Baseline::Top)
+            Text::with_baseline(menu.items[idx].label, Point::new(0, y), inverted, Baseline::Top)
                 .draw(display)
                 .unwrap();
         } else {
-            Text::with_baseline(label.as_str(), Point::new(0, y), normal, Baseline::Top)
+            Text::with_baseline(menu.items[idx].label, Point::new(0, y), normal, Baseline::Top)
                 .draw(display)
                 .unwrap();
         }
@@ -357,167 +264,22 @@ fn render_menu(
 }
 
 #[embassy_executor::task]
-pub async fn radio_task() {
+pub async fn action_handler() {
     loop {
         match MENU_CMD_CH.receive().await {
-            MenuCommand::WifiDeauthSelected => {
-                if let Some(ap) = get_selected_ap() {
-                    wifi_deauth_test(ap).await;
-                } else {
-                    info!("No WiFi AP selected");
-                }
+            Action::RunDuck(file) => {
+                DUCKY_CH.send(file).await;
             }
 
-            MenuCommand::WifiClearSelected => {
-                // SELECTED_WIFI_AP.store(core::ptr::null(), Ordering::Relaxed);
-                info!("WiFi selection cleared");
+            Action::ToggleBluetooth => {
+                info!("Toggling Bluetooth AP");
             }
 
-            MenuCommand::ToggleBluetooth => {
-                info!("Toggling Bluetooth");
-            }
-
-            MenuCommand::Reboot => {
+            Action::Reboot => {
                 esp_hal::system::software_reset();
             }
-
             _ => {}
         }
-    }
-}
-
-async fn wifi_deauth_test(ap: &'static WifiApInfo) {
-    info!(
-        "Deauth test requested for SSID='{}' CH={} RSSI={}",
-        ap.ssid,
-        ap.channel,
-        ap.rssi
-    );
-
-    // 1️⃣ Switch radio to AP channel (allowed)
-    // esp_wifi_set_channel(ap.channel, WIFI_SECOND_CHAN_NONE);
-
-    // 2️⃣ Placeholder: we CANNOT enumerate stations on ESP32
-    info!("ESP32 cannot enumerate stations of foreign APs");
-
-    // 3️⃣ Placeholder loop for future injector
-    for i in 0..5 {
-        info!("(stub) Would send deauth burst {}", i);
-        embassy_time::Timer::after_millis(100).await;
-    }
-
-    info!("Deauth test completed (stub)");
-}
-
-#[embassy_executor::task]
-pub async fn ble_scan_task() {
-    // loop {
-    //     match MENU_CMD_CH.receive().await {
-    //         MenuCommand::BleScan => {
-    //             info!("Starting BLE scan...");
-    //
-    //             // pseudo-code: scan for BLE devices
-    //             // let devices = esp_radio::ble::scan().await; // returns Vec<Device>
-    //             // let labels: Vec<&'static str> = devices.iter()
-    //             //     .map(|d| Box::leak(d.name_or_address().to_string().into_boxed_str()))
-    //             //     .collect();
-    //             //
-    //             // if labels.is_empty() {
-    //             //     continue;
-    //             // }
-    //             //
-    //             // let dyn_menu = create_dynamic_menu("BLE Devices", &labels);
-    //             //
-    //             // // send dynamic menu command to menu task
-    //             // MENU_CMD_CH.send(MenuCommand::EnterDynamic(dyn_menu)).await;
-    //         }
-    //         _ => {}
-    //     }
-    // }
-}
-
-#[embassy_executor::task]
-pub async fn wifi_scan_task(
-    wifi: &'static mut WifiController<'static>,
-) {
-    loop {
-        WIFI_SCAN_CH.receive().await;
-
-        let result = match wifi.scan_with_config(ScanConfig::default()) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-
-        let mut aps = Vec::new();
-
-        for ap in result {
-            let ssid: &'static str =
-                Box::leak(ap.ssid.clone().into_boxed_str());
-
-            aps.push(WifiApInfo {
-                ssid,
-                rssi: ap.signal_strength,
-                channel: ap.channel,
-                // auth: ap.auth_method,
-            });
-        }
-
-        let menu = build_wifi_menu(aps);
-
-        MENU_MSG_CH
-            .send(MenuMsg::PushMenu(menu))
-            .await;
-    }
-}
-
-fn build_wifi_menu(aps: Vec<WifiApInfo>) -> &'static Menu {
-    let ap_infos: &'static [WifiApInfo] =
-        Box::leak(aps.into_boxed_slice());
-
-    let items: Vec<MenuItem> = ap_infos
-        .iter()
-        .map(|ap| MenuItem {
-            label: ap.ssid,
-            action: MenuAction::WifiAp(ap),
-        })
-        .collect();
-
-    Box::leak(Box::new(Menu {
-        title: "WiFi Networks",
-        items: Box::leak(items.into_boxed_slice()),
-    }))
-}
-
-fn build_wifi_ap_action_menu(ap: &'static WifiApInfo) -> &'static Menu {
-    let items = vec![
-        MenuItem {
-            label: "Connect",
-            // action: MenuAction::Trigger(MenuCommand::WifiConnect(ap)),
-            action: MenuAction::Trigger(MenuCommand::Reboot)
-        },
-        MenuItem {
-            label: "Deauth Test",
-            // action: MenuAction::Trigger(MenuCommand::WifiDeauth(ap)),
-            action: MenuAction::Trigger(MenuCommand::Reboot)
-        },
-    ];
-
-    Box::leak(Box::new(Menu {
-        title: ap.ssid,
-        items: Box::leak(items.into_boxed_slice()),
-    }))
-}
-
-pub fn set_selected_ap(ap: &'static WifiApInfo) {
-    SELECTED_WIFI_AP.store(ap as *const _ as *mut _, Ordering::Relaxed);
-}
-
-pub fn get_selected_ap() -> Option<&'static WifiApInfo> {
-    let ptr = SELECTED_WIFI_AP.load(Ordering::Relaxed);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { &*ptr })
     }
 }
 

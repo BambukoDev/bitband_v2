@@ -1,2 +1,6 @@
 pub mod battery;
 pub mod clock;
+pub mod keyboard;
+pub mod hid;
+pub mod ducky;
+pub mod bluetooth;
