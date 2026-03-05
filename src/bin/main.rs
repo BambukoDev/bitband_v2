@@ -229,10 +229,10 @@ async fn main(spawner: Spawner) {
     // volume0.close().expect("Failed to close volume 0");
     // info!("File creation test successful");
 
-    // spawner.spawn(services::ducky::ducky_task(volume_mgr)).unwrap();
-    // spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
     let file_browser = ui::file_browser::get_file_browser();
     spawner.spawn(sd_monitor_task(cd, shared_spi_bus, cs_refcell, file_browser)).unwrap();
+    spawner.spawn(services::ducky::ducky_task(shared_spi_bus, cs_refcell)).unwrap();
+    spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
     spawner.spawn(ui::menu::menu_task(display_bot, file_browser)).unwrap();
 
     // loop {

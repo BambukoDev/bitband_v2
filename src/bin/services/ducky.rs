@@ -8,6 +8,7 @@ use embedded_sdmmc::SdCard;
 use esp_hal::gpio::Output;
 use esp_hal::spi;
 use esp_hal::Blocking;
+use smart_leds::RGB;
 use crate::services::hid::*;
 use crate::services::keyboard::*;
 use crate::DummyTime;
@@ -17,6 +18,11 @@ use embassy_time::{Duration, Timer};
 use embedded_sdmmc::{VolumeManager, TimeSource};
 use defmt::{error, info};
 use alloc::{boxed::Box, vec::Vec};
+
+use core::cell::RefCell;
+use esp_hal::spi::master::Spi;
+
+use crate::services::led::{LED_CMD_CH, LedState};
 
 #[derive(Clone)]
 pub enum DuckCmd {
@@ -31,7 +37,8 @@ pub static DUCKY_CH: Channel<
     4,
 > = Channel::new();
 
-const DEFAULT_DELAY_MS: u64 = 16;
+const KEY_PRESS_MS: u64 = 30;
+const KEY_RELEASE_MS: u64 = 15;
 
 fn key_from_name(name: &str) -> Option<u8> {
     match name {
@@ -118,37 +125,57 @@ async fn press_key(modifier: u8, key: u8) {
         keys: [key, 0, 0, 0, 0, 0],
     }).await;
 
-    Timer::after(Duration::from_millis(DEFAULT_DELAY_MS)).await;
+    LED_CMD_CH.send(LedState::On(RGB {
+        r: 0,
+        g: 0,
+        b: 10,
+    })).await;
+
+    Timer::after(Duration::from_millis(KEY_PRESS_MS)).await;
 
     HID_CH.send(KeyReport {
         modifier: 0,
         keys: [0; 6],
     }).await;
 
-    Timer::after(Duration::from_millis(DEFAULT_DELAY_MS)).await;
+    LED_CMD_CH.send(LedState::Off).await;
+
+    Timer::after(Duration::from_millis(KEY_RELEASE_MS)).await;
 }
 
 
 #[task]
 pub async fn ducky_task(
-    volume_mgr: &'static VolumeManager<
-        SdCard<
-            RefCellDevice <
-                'static, 
-                spi::master::Spi<'static, Blocking>,
-                Output<'static>,
-                esp_hal::delay::Delay
-            >,
-            esp_hal::delay::Delay
-        >,
-        DummyTime
-    >
+    spi_bus: &'static RefCell<Spi<'static, Blocking>>, 
+    cs_pin: &'static RefCell<Output<'static>>,
 ) {
     info!("[DUCKY] task started");
 
     loop {
         let filename = DUCKY_CH.receive().await;
         info!("[DUCKY] received request: {}", filename);
+
+        info!("Attempting to borrow CS");
+
+        // Try to borrow. If the monitor is currently scanning, we wait briefly and try again.
+        let mut cs_borrow = loop {
+            if let Ok(b) = cs_pin.try_borrow_mut() {
+                break b;
+            }
+            info!("CS busy, retrying...");
+            Timer::after(Duration::from_millis(100)).await;
+        };
+
+        info!("Borrowed CS successfully");
+
+        // 2. Re-initialize the SPI device and SD card locally
+        let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).inspect_err(|f| {
+            error!("Failed to create SPI device on Ducky!");
+        }).unwrap();
+        let mut sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
+
+        // 3. Initialize VolumeManager only when needed
+        let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
 
         let volume = match volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
             Ok(v) => v,
@@ -169,8 +196,12 @@ pub async fn ducky_task(
         let ducky_dir = match root.open_dir("DUCKY") {
             Ok(d) => d,
             Err(_) => {
-                root.make_dir_in_dir("DUCKY").expect("Failed to create DUCKY dir");
-                root.open_dir("DUCKY").expect("Failed to open DUCKY dir")
+                root.make_dir_in_dir("DUCKY").inspect_err(|_| {
+                    error!("Failed to make DUCKY dir");
+                }).unwrap();
+                root.open_dir("DUCKY").inspect_err(|_| {
+                    error!("Failed to open DUCKY dir");
+                }).unwrap()
             }
         };
 
