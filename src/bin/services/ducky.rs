@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::string::ToString;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_hal_bus::spi::RefCellDevice;
@@ -10,10 +11,12 @@ use esp_hal::Blocking;
 use crate::services::hid::*;
 use crate::services::keyboard::*;
 use crate::DummyTime;
+use crate::ui::file_browser::MAX_NAME;
 use embassy_executor::task;
 use embassy_time::{Duration, Timer};
 use embedded_sdmmc::{VolumeManager, TimeSource};
 use defmt::{error, info};
+use alloc::{boxed::Box, vec::Vec};
 
 #[derive(Clone)]
 pub enum DuckCmd {
@@ -24,9 +27,106 @@ pub enum DuckCmd {
 
 pub static DUCKY_CH: Channel<
     CriticalSectionRawMutex,
-    &'static str,
-    2,
+    heapless::String<MAX_NAME>,
+    4,
 > = Channel::new();
+
+const DEFAULT_DELAY_MS: u64 = 16;
+
+fn key_from_name(name: &str) -> Option<u8> {
+    match name {
+        "ENTER" => Some(KEY_ENTER),
+        "ESC" => Some(KEY_ESC),
+        "BACKSPACE" => Some(KEY_BACKSPACE),
+        "TAB" => Some(KEY_TAB),
+        "SPACE" => Some(KEY_SPACE),
+        "DELETE" => Some(KEY_DELETE),
+        "UP" => Some(KEY_UP),
+        "DOWN" => Some(KEY_DOWN),
+        "LEFT" => Some(KEY_LEFT),
+        "RIGHT" => Some(KEY_RIGHT),
+
+        "F1" => Some(KEY_F1),
+        "F2" => Some(KEY_F2),
+        "F3" => Some(KEY_F3),
+        "F4" => Some(KEY_F4),
+        "F5" => Some(KEY_F5),
+        "F6" => Some(KEY_F6),
+        "F7" => Some(KEY_F7),
+        "F8" => Some(KEY_F8),
+        "F9" => Some(KEY_F9),
+        "F10" => Some(KEY_F10),
+        "F11" => Some(KEY_F11),
+        "F12" => Some(KEY_F12),
+
+        _ => None,
+    }
+}
+
+fn parse_combo(line: &str) -> Option<(u8, u8)> {
+    let mut modifier = 0u8;
+    let mut key_code = 0u8;
+
+    for part in line.split('+') {
+        match part {
+            "CTRL" => modifier |= MOD_CTRL,
+            "SHIFT" => modifier |= MOD_SHIFT,
+            "ALT" => modifier |= MOD_ALT,
+            "GUI" | "WINDOWS" => modifier |= MOD_GUI,
+            k => {
+                if let Some(code) = key_from_name(k) {
+                    key_code = code;
+                } else if k.len() == 1 {
+                    let (m, kcode) = ascii_to_key(k.as_bytes()[0]);
+                    modifier |= m;
+                    key_code = kcode;
+                }
+            }
+        }
+    }
+
+    if key_code == 0 { None } else { Some((modifier, key_code)) }
+}
+
+fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
+    let line = line.trim();
+
+    if line.is_empty() || line.starts_with("REM") {
+        return None;
+    }
+
+    if line.starts_with("DELAY ") {
+        let ms = line[6..].trim().parse().ok()?;
+        return Some(DuckCmd::Delay(ms));
+    }
+
+    if line.starts_with("STRING ") {
+        let text = &line[7..];
+        return Some(DuckCmd::String(Box::leak(text.to_string().into_boxed_str())));
+    }
+
+    if let Some((modifier, key)) = parse_combo(line) {
+        return Some(DuckCmd::Key { modifier, key });
+    }
+
+    None
+}
+
+async fn press_key(modifier: u8, key: u8) {
+    HID_CH.send(KeyReport {
+        modifier,
+        keys: [key, 0, 0, 0, 0, 0],
+    }).await;
+
+    Timer::after(Duration::from_millis(DEFAULT_DELAY_MS)).await;
+
+    HID_CH.send(KeyReport {
+        modifier: 0,
+        keys: [0; 6],
+    }).await;
+
+    Timer::after(Duration::from_millis(DEFAULT_DELAY_MS)).await;
+}
 
 
 #[task]
@@ -44,37 +144,6 @@ pub async fn ducky_task(
         DummyTime
     >
 ) {
-    // loop {
-    //     let filename = DUCKY_CH.receive().await;
-    //
-    //     let volume = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).unwrap();
-    //     let root = volume.open_root_dir().unwrap();
-    //     let mut file = root.open_file_in_dir(filename, embedded_sdmmc::Mode::ReadOnly).unwrap();
-    //
-    //     let mut buf = [0u8; 64];
-    //
-    //     while let Ok(n) = file.read(&mut buf) {
-    //         if n == 0 { break; }
-    //
-    //         for &b in &buf[..n] {
-    //             let (modi, key) = ascii_to_key(b);
-    //             if key == 0 { continue; }
-    //
-    //             HID_CH.send(KeyReport {
-    //                 modifier: modi,
-    //                 keys: [key, 0, 0, 0, 0, 0],
-    //             }).await;
-    //
-    //             Timer::after(Duration::from_millis(5)).await;
-    //
-    //             HID_CH.send(KeyReport {
-    //                 modifier: 0,
-    //                 keys: [0; 6],
-    //             }).await;
-    //         }
-    //     }
-    // }
-
     info!("[DUCKY] task started");
 
     loop {
@@ -113,7 +182,7 @@ pub async fn ducky_task(
         }).expect("Failed to iterate directory");
 
         let mut file = match ducky_dir.open_file_in_dir(
-            filename,
+            filename.as_str(),
             embedded_sdmmc::Mode::ReadOnly,
         ) {
             Ok(f) => f,
@@ -125,26 +194,51 @@ pub async fn ducky_task(
 
         info!("[DUCKY] file opened successfully");
 
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; 64];
+        let mut partial_line = Vec::new();
 
         loop {
             match file.read(&mut buf) {
-                Ok(0) => {
-                    info!("[DUCKY] EOF");
-                    break;
-                }
+                Ok(0) => break,
                 Ok(n) => {
                     for &b in &buf[..n] {
-                        info!("[DUCKY] byte: 0x{:02X} '{}'", b, b as char);
+                        if b == b'\n' || b == b'\r' {
+                            if !partial_line.is_empty() {
+                                let line = str::from_utf8(&partial_line).unwrap_or("");
+                                if let Some(cmd) = parse_ducky_line(line) {
+                                    execute_ducky_cmd(cmd).await;
+                                }
+                                partial_line.clear();
+                            }
+                        } else {
+                            partial_line.push(b);
+                        }
                     }
                 }
-                Err(e) => {
-                    // error!("[DUCKY] read error: {:?}", e);
-                    break;
+                Err(_) => break,
+            }
+        }
+        info!("[DUCKY] script finished");
+    }
+}
+
+async fn execute_ducky_cmd(cmd: DuckCmd) {
+    match cmd {
+        DuckCmd::Delay(ms) => {
+            Timer::after(Duration::from_millis(ms as u64)).await;
+        }
+
+        DuckCmd::String(s) => {
+            for b in s.bytes() {
+                let (modifier, key) = ascii_to_key(b);
+                if key != 0 {
+                    press_key(modifier, key).await;
                 }
             }
         }
 
-        info!("[DUCKY] script finished");
+        DuckCmd::Key { modifier, key } => {
+            press_key(modifier, key).await;
+        }
     }
 }

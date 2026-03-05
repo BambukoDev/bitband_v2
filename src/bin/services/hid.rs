@@ -6,8 +6,31 @@ pub const MOD_SHIFT: u8 = 0x02;
 pub const MOD_ALT: u8   = 0x04;
 pub const MOD_GUI: u8   = 0x08;
 
-pub const KEY_ENTER: u8 = 0x28;
-pub const KEY_SPACE: u8 = 0x2C;
+pub const KEY_ENTER: u8      = 0x28;
+pub const KEY_ESC: u8        = 0x29;
+pub const KEY_BACKSPACE: u8  = 0x2A;
+pub const KEY_TAB: u8        = 0x2B;
+pub const KEY_SPACE: u8      = 0x2C;
+pub const KEY_DELETE: u8     = 0x4C;
+
+pub const KEY_RIGHT: u8 = 0x4F;
+pub const KEY_LEFT: u8  = 0x50;
+pub const KEY_DOWN: u8  = 0x51;
+pub const KEY_UP: u8    = 0x52;
+
+pub const KEY_F1: u8  = 0x3A;
+pub const KEY_F2: u8  = 0x3B;
+pub const KEY_F3: u8  = 0x3C;
+pub const KEY_F4: u8  = 0x3D;
+pub const KEY_F5: u8  = 0x3E;
+pub const KEY_F6: u8  = 0x3F;
+pub const KEY_F7: u8  = 0x40;
+pub const KEY_F8: u8  = 0x41;
+pub const KEY_F9: u8  = 0x42;
+pub const KEY_F10: u8 = 0x43;
+pub const KEY_F11: u8 = 0x44;
+pub const KEY_F12: u8 = 0x45;
+
 
 #[derive(Copy, Clone)]
 pub struct KeyReport {

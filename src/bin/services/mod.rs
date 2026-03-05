@@ -4,3 +4,6 @@ pub mod keyboard;
 pub mod hid;
 pub mod ducky;
 pub mod bluetooth;
+pub mod usb_keyboard;
+pub mod led;
+pub mod sd_monitor;

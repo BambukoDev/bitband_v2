@@ -6,12 +6,13 @@
     holding buffers for the duration of a data transfer."
 )]
 // #![deny(clippy::large_stack_frames)]
+pub const L2CAP_MTU: usize = 255;
 
 use core::cell::RefCell;
 
 use embassy_net::Config;
 use embedded_hal::{digital::{InputPin, OutputPin}, spi::{ErrorType, SpiBus}};
-use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, UsbBus}, peripherals, spi, DriverMode};
+use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, Usb, UsbBus}, peripherals, spi, DriverMode};
 
 use bt_hci::{cmd::info, controller::ExternalController};
 use defmt::{error, info};
@@ -24,7 +25,6 @@ use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
 use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController}};
 use static_cell::StaticCell;
-use trouble_host::prelude::*;
 
 use smart_leds::{brightness, colors, SmartLedsWrite as _};
 
@@ -61,6 +61,8 @@ use ui::top_bar;
 
 use embedded_hal_bus::spi::ExclusiveDevice;
 
+use crate::services::{bluetooth::run, sd_monitor::sd_monitor_task};
+
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
     error!("Panicked: {}", p.message().as_str());
@@ -68,9 +70,6 @@ fn panic(p: &core::panic::PanicInfo) -> ! {
 }
 
 extern crate alloc;
-
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -80,6 +79,8 @@ esp_bootloader_esp_idf::esp_app_desc!();
     clippy::large_stack_frames,
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
+
+static CS_CELL: StaticCell<RefCell<Output<'static>>> = StaticCell::new();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
@@ -103,25 +104,24 @@ async fn main(spawner: Spawner) {
     let (mut _wifi_controller, _interfaces) =
         esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
+
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 1>::new(transport);
-    let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let _stack = trouble_host::new(ble_controller, &mut resources);
-
+    let ble_controller = ExternalController::<_, 20>::new(transport);
     let client_conf = ClientConfig::default()
         .with_ssid(String::new())
         .with_password(String::new());
     let modeconf = ModeConfig::Client(client_conf);
 
+    let usb = Usb::new(peripherals.USB0, peripherals.GPIO20, peripherals.GPIO19);
+
     _wifi_controller.set_config(&modeconf).unwrap();
     _wifi_controller.start().unwrap();
 
-    let mut pulse_code = smart_led_buffer!(1);
+    let mut pulse_code = Box::leak(Box::new(smart_led_buffer!(1)));
     let frequency = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, frequency).expect("Failed to initialize RMT0");
-    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO38, &mut pulse_code);
+    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO38, pulse_code);
     info!("RGB light initialized!");
 
     let disp_top_i2c = i2c::master::I2c::new(peripherals.I2C0, i2c::master::Config::default())
@@ -185,15 +185,17 @@ async fn main(spawner: Spawner) {
 
     let wifi_ctrl: &'static mut WifiController<'static> = Box::leak(Box::new(_wifi_controller));
 
+    spawner.spawn(services::led::led_task(led)).unwrap();
     spawner.spawn(button::button_task(btn_up, btn_down, btn_sel)).unwrap();
-    spawner.spawn(ui::menu::menu_task(display_bot)).unwrap();
     spawner.spawn(ui::top_bar::status_task(display_top)).unwrap();
     spawner.spawn(services::battery::battery_task()).unwrap();
     spawner.spawn(ui::menu::action_handler()).unwrap();
+    // spawner.spawn(services::bluetooth::bluetooth_task(ble_controller)).unwrap();
     // spawner.spawn(services::clock::clock_task()).unwrap();
 
     let cd = Input::new(peripherals.GPIO15, InputConfig::default().with_pull(Pull::Up));
     let cs = Output::new(peripherals.GPIO10, gpio::Level::High, OutputConfig::default());
+    let cs_refcell = CS_CELL.init(RefCell::new(cs));
     let sck = peripherals.GPIO12;
     let mosi = peripherals.GPIO11;
     let miso = peripherals.GPIO13;
@@ -206,56 +208,44 @@ async fn main(spawner: Spawner) {
         .with_mosi(mosi)
         .with_miso(miso)
         .with_sck(sck);
-    // let shared_spi_bus = RefCell::new(spi_bus);
-    // let spi_device = RefCellDevice::new(&shared_spi_bus, cs, esp_hal::delay::Delay::new())
-    //     .expect("Failed to create SPI device");
     info!("SPI device created!");
     let shared_spi_bus = Box::leak(Box::new(RefCell::new(spi_bus)));
-    let spi_device = RefCellDevice::new(shared_spi_bus, cs, esp_hal::delay::Delay::new())
-        .expect("Failed to create SPI device");
+    // let volume0 = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).expect("Failed to open volume 0");
+    // info!("Opened volume 0");
+    // let root_dir = volume0.open_root_dir().expect("Failed to open root directory");
+    // info!("Opened root dir");
+    //
+    // shared_spi_bus.borrow_mut().apply_config(&spi::master::Config::default()
+    //     .with_frequency(Rate::from_mhz(2))
+    //     .with_mode(spi::Mode::_0)
+    // ).expect("Failed to speed up the SD card");
+    // info!("Sped up the SD card");
+    //
+    // let mut file = root_dir.open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrAppend)
+    //     .expect("Failed to create test.txt");
+    // file.write("Amogus".as_bytes()).expect("Failed to write Amogus to test.txt");
+    // file.close().expect("Failed to close test.txt");
+    // root_dir.close().expect("Failed to close root dir");
+    // volume0.close().expect("Failed to close volume 0");
+    // info!("File creation test successful");
 
-    let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
-    
-    let sd_size = sdcard.num_bytes();
-    if let Ok(bytes) = sd_size {
-        info!("SD card size: {} GiB", bytes / 1024 / 1024 / 1024);
-    } else {
-        info!("Failed to initialize SD card");
-    }
+    // spawner.spawn(services::ducky::ducky_task(volume_mgr)).unwrap();
+    // spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
+    let file_browser = ui::file_browser::get_file_browser();
+    spawner.spawn(sd_monitor_task(cd, shared_spi_bus, cs_refcell, file_browser)).unwrap();
+    spawner.spawn(ui::menu::menu_task(display_bot, file_browser)).unwrap();
 
-    let volume_mgr = SD_MGR.init(VolumeManager::new(sdcard, DummyTime));
-    let volume0 = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).expect("Failed to open volume 0");
-    info!("Opened volume 0");
-    let root_dir = volume0.open_root_dir().expect("Failed to open root directory");
-    info!("Opened root dir");
+    // loop {
+    //     info!("KEEPALIVE");
+    //     led.write(brightness([colors::RED].into_iter(), 10)).unwrap();
+    //     Timer::after(Duration::from_millis(300)).await;
+    //     led.write(brightness([colors::GREEN].into_iter(), 10)).unwrap();
+    //     Timer::after(Duration::from_millis(300)).await;
+    //     led.write(brightness([colors::BLUE].into_iter(), 10)).unwrap();
+    //     Timer::after(Duration::from_millis(300)).await;
+    // }
 
-    shared_spi_bus.borrow_mut().apply_config(&spi::master::Config::default()
-        .with_frequency(Rate::from_mhz(2))
-        .with_mode(spi::Mode::_0)
-    ).expect("Failed to speed up the SD card");
-    info!("Sped up the SD card");
-
-    let mut file = root_dir.open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrAppend)
-        .expect("Failed to create test.txt");
-    file.write("Amogus".as_bytes()).expect("Failed to write Amogus to test.txt");
-    file.close().expect("Failed to close test.txt");
-    root_dir.close().expect("Failed to close root dir");
-    volume0.close().expect("Failed to close volume 0");
-    info!("File creation test successful");
-
-    spawner.spawn(services::ducky::ducky_task(volume_mgr)).unwrap();
-
-    loop {
-        // info!("KEEPALIVE");
-        led.write(brightness([colors::RED].into_iter(), 10)).unwrap();
-        Timer::after(Duration::from_millis(300)).await;
-        led.write(brightness([colors::GREEN].into_iter(), 10)).unwrap();
-        Timer::after(Duration::from_millis(300)).await;
-        led.write(brightness([colors::BLUE].into_iter(), 10)).unwrap();
-        Timer::after(Duration::from_millis(300)).await;
-    }
-
-    // core::future::pending::<()>().await;
+    core::future::pending::<()>().await;
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
 }
@@ -289,3 +279,16 @@ pub static SD_MGR: StaticCell<
         DummyTime
     >
 > = StaticCell::new();
+
+type SD_MGR_TYPE =
+    VolumeManager<
+        SdCard<
+            RefCellDevice<'static,
+                spi::master::Spi<'static, esp_hal::Blocking>,
+                Output<'static>,
+                esp_hal::delay::Delay
+            >,
+            esp_hal::delay::Delay
+        >,
+        DummyTime
+    >;
