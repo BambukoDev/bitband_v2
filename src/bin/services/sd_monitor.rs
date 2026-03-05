@@ -29,9 +29,7 @@ pub async fn sd_monitor_task(
     file_menu: &'static FileMenu,
 ) {
      loop {
-
         // Wait for the card to be physically inserted (assuming Active Low)
-
         if cd_pin.is_low() {
             info!("[SD] Waiting for card insertion...");
             LED_CMD_CH.send(LedState::Blink(RGB {
@@ -44,37 +42,58 @@ pub async fn sd_monitor_task(
             Timer::after(Duration::from_millis(200)).await;
         }
 
-        info!("[SD] Card detected on GPIO15. Mounting...");
+        info!("[SD] Card detected. Mounting...");
+        let mut cs_borrow = cs_pin.borrow_mut();
 
-        // Attempt to mount and read files
-        if let Ok(v) = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
-            if let Ok(root) = v.open_root_dir() {
-                if let Ok(ducky_dir) = root.open_dir("DUCKY") {
-                    let mut new_entries = Vec::<FileEntry, MAX_FILES>::new();
+        let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).expect("Failed to create SPI device!");
+        let mut sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
 
-                    let _ = ducky_dir.iterate_dir(|file| {
-                        if !file.attributes.is_directory() {
-                            let mut name = heapless::String::<MAX_NAME>::new();
-                            let base = core::str::from_utf8(file.name.base_name()).unwrap_or("");
-                            let ext = core::str::from_utf8(file.name.extension()).unwrap_or("");
-                            let _ = write!(name, "{}.{}", base, ext);
-                            let _ = new_entries.push(FileEntry { name });
+        match sdcard.num_bytes() {
+            Ok(size) => {
+                info!("[SD] Card Initialized: {} MB", size / 1024 / 1024);
+                
+                // 4. Create Volume Manager
+                let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
+                
+                // Populate the menu (your existing logic)
+                if let Ok(mut volume) = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
+                    // Attempt to mount and read files
+                    if let Ok(root) = volume.open_root_dir() {
+                        if let Ok(ducky_dir) = root.open_dir("DUCKY") {
+                            let mut new_entries = Vec::<FileEntry, MAX_FILES>::new();
+
+                            let _ = ducky_dir.iterate_dir(|file| {
+                                if !file.attributes.is_directory() {
+                                    let mut name = heapless::String::<MAX_NAME>::new();
+                                    let base = core::str::from_utf8(file.name.base_name()).unwrap_or("");
+                                    let ext = core::str::from_utf8(file.name.extension()).unwrap_or("");
+                                    let _ = write!(name, "{}.{}", base, ext);
+                                    let _ = new_entries.push(FileEntry { name });
+                                }
+                            });
+                            // Update the menu task's data
+                            let mut entries = file_menu.entries.lock().await;
+                            *entries = new_entries;
+                            info!("[SD] Menu populated with {} files", entries.len());
+                        } else {
+                            error!("Failed to open DUCKY dir")
                         }
-                    });
-
-                    // Update the menu task's data
-                    let mut entries = file_menu.entries.lock().await;
-                    *entries = new_entries;
-                    info!("[SD] Menu populated with {} files", entries.len());
-                } else {
-                    error!("Failed to open DUCKY dir")
+                    } else {
+                        error!("Failed to open root dir")
+                    }
                 }
-            } else {
-                error!("Failed to open root dir")
+                
+                // 5. Wait for Removal
+                cd_pin.wait_for_high().await;
+                info!("[SD] Card Removed.");
             }
-        } else {
-            error!("Failed to open volume_mgr");
+            Err(e) => {
+                error!("[SD] Failed to init card");
+                // Wait for removal so we don't loop-error infinitely
+                cd_pin.wait_for_high().await;
+            }
         }
+
 
         LED_CMD_CH.send(LedState::Blink(RGB {
             r: 0,
