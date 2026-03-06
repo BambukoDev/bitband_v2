@@ -185,6 +185,7 @@ async fn main(spawner: Spawner) {
 
     let wifi_ctrl: &'static mut WifiController<'static> = Box::leak(Box::new(_wifi_controller));
 
+    spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
     spawner.spawn(services::led::led_task(led)).unwrap();
     spawner.spawn(button::button_task(btn_up, btn_down, btn_sel)).unwrap();
     spawner.spawn(ui::top_bar::status_task(display_top)).unwrap();
@@ -232,7 +233,6 @@ async fn main(spawner: Spawner) {
     let file_browser = ui::file_browser::get_file_browser();
     spawner.spawn(sd_monitor_task(cd, shared_spi_bus, cs_refcell, file_browser)).unwrap();
     spawner.spawn(services::ducky::ducky_task(shared_spi_bus, cs_refcell)).unwrap();
-    spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
     spawner.spawn(ui::menu::menu_task(display_bot, file_browser)).unwrap();
 
     // loop {

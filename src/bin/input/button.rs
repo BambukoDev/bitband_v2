@@ -6,6 +6,8 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio;
 
+use crate::services::ducky::PAUSE_BUTTON_CH;
+
 const DEBOUNCE_MS: u64 = 30;
 const LONG_PRESS_MS: u64 = 600;
 const POLL_MS: u64 = 10;
@@ -40,6 +42,7 @@ pub async fn button_task(
         if select.is_low() {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
             if select.is_low() {
+                PAUSE_BUTTON_CH.send(()).await;
                 handle_select_press(&mut select).await;
             }
         }

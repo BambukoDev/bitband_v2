@@ -45,6 +45,9 @@ pub enum TopBarMode {
     Normal {
         battery_percent: u8,
         time_hhmm: (u8, u8),
+    },
+    Message {
+        text: heapless::String<64>,
     }
 }
 
@@ -75,15 +78,26 @@ pub async fn status_task(mut display: Display) {
         if let Ok(msg) = TOP_BAR_CH.try_receive() {
             state = match msg {
                 TopBarMode::Normal { battery_percent, time_hhmm } => TopBarMode::Normal { battery_percent, time_hhmm },
+                TopBarMode::Message { text } => TopBarMode::Message { text },
             };
         }
 
         display.clear_buffer();
 
         match state {
-            TopBarMode::Normal {battery_percent, time_hhmm} => {
+            TopBarMode::Normal { battery_percent, time_hhmm } => {
                 BatteryWidget.draw(&mut display, tick, style);
                 ClockWidget.draw(&mut display, tick, style);
+            }
+
+            TopBarMode::Message { ref text } => {
+                draw_text_at(
+                    &mut display,
+                    text.as_str(),
+                    0,
+                    0,
+                    style,
+                );
             }
         }
 

@@ -9,6 +9,7 @@ use esp_hal::gpio::Output;
 use esp_hal::spi;
 use esp_hal::Blocking;
 use smart_leds::RGB;
+use static_cell::StaticCell;
 use crate::services::hid::*;
 use crate::services::keyboard::*;
 use crate::DummyTime;
@@ -23,12 +24,16 @@ use core::cell::RefCell;
 use esp_hal::spi::master::Spi;
 
 use crate::services::led::{LED_CMD_CH, LedState};
+use crate::ui::top_bar::*;
 
 #[derive(Clone)]
 pub enum DuckCmd {
     Delay(u32),
     Key { modifier: u8, key: u8 },
     String(&'static str),
+    Rem(heapless::String<64>),
+    Pause,
+    Repeat(u16),
 }
 
 pub static DUCKY_CH: Channel<
@@ -36,6 +41,14 @@ pub static DUCKY_CH: Channel<
     heapless::String<MAX_NAME>,
     4,
 > = Channel::new();
+
+pub static PAUSE_BUTTON_CH: Channel<
+    CriticalSectionRawMutex,
+    (),
+    2
+> = Channel::new();
+
+static mut LAST_CMD: Option<DuckCmd> = None;
 
 const KEY_PRESS_MS: u64 = 30;
 const KEY_RELEASE_MS: u64 = 15;
@@ -98,8 +111,19 @@ fn parse_combo(line: &str) -> Option<(u8, u8)> {
 fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
     let line = line.trim();
 
-    if line.is_empty() || line.starts_with("REM") {
+    if line.is_empty() {
         return None;
+    }
+
+    if line.starts_with("REM ") {
+        let text = &line[4..];
+
+        info!("[DUCKY] REM {}", text);
+
+        let mut msg: heapless::String<64> = heapless::String::new();
+        let _ = msg.push_str(text); // truncate if too long
+        
+        return Some(DuckCmd::Rem(msg));
     }
 
     if line.starts_with("DELAY ") {
@@ -110,6 +134,15 @@ fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
     if line.starts_with("STRING ") {
         let text = &line[7..];
         return Some(DuckCmd::String(Box::leak(text.to_string().into_boxed_str())));
+    }
+
+    if line == "PAUSE" {
+        return Some(DuckCmd::Pause);
+    }
+
+    if line.starts_with("REPEAT ") {
+        let n = line[7..].trim().parse().ok()?;
+        return Some(DuckCmd::Repeat(n));
     }
 
     if let Some((modifier, key)) = parse_combo(line) {
@@ -150,6 +183,7 @@ pub async fn ducky_task(
     cs_pin: &'static RefCell<Output<'static>>,
 ) {
     info!("[DUCKY] task started");
+    let mut last_cmd: Option<DuckCmd> = None;
 
     loop {
         let filename = DUCKY_CH.receive().await;
@@ -237,7 +271,28 @@ pub async fn ducky_task(
                             if !partial_line.is_empty() {
                                 let line = str::from_utf8(&partial_line).unwrap_or("");
                                 if let Some(cmd) = parse_ducky_line(line) {
-                                    execute_ducky_cmd(cmd).await;
+                                    match &cmd {
+                                        DuckCmd::Repeat(n) => {
+                                            if let Some(prev) = &last_cmd {
+                                                for _ in 0..*n {
+                                                    execute_ducky_cmd(prev.clone()).await;
+                                                }
+                                            }
+                                        }
+
+                                        _ => {
+                                            execute_ducky_cmd(cmd.clone()).await;
+
+                                            match cmd {
+                                                DuckCmd::Delay(_) |
+                                                DuckCmd::String(_) |
+                                                DuckCmd::Key { .. } => {
+                                                    last_cmd = Some(cmd);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                 }
                                 partial_line.clear();
                             }
@@ -268,8 +323,28 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
             }
         }
 
+        DuckCmd::Rem(text) => {
+            TOP_BAR_CH.send(TopBarMode::Message { text }).await;
+        }
+
         DuckCmd::Key { modifier, key } => {
             press_key(modifier, key).await;
         }
+
+        DuckCmd::Pause => {
+            info!("[DUCKY] Waiting for button");
+            LED_CMD_CH.send(LedState::Blink(RGB { r:10,g:0,b:0 }, 100)).await;
+
+            let mut msg: heapless::String<64> = heapless::String::new();
+            let _ = msg.push_str("PAUSED");
+
+            TOP_BAR_CH.send(TopBarMode::Message { text: msg }).await;
+
+            PAUSE_BUTTON_CH.receive().await;
+
+            info!("[DUCKY] Resuming");
+        }
+        
+        DuckCmd::Repeat(_) => { /* handled in ducky_task */}
     }
 }
