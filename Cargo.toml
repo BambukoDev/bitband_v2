@@ -25,11 +25,20 @@ esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32s3"] }
 embassy-net = { version = "0.8.0", features = [
   "defmt",
   "dhcpv4",
-  "medium-ethernet",
   "tcp",
   "udp",
+  "proto-ipv4",
+  "medium-ip",
+  "alloc",
 ] }
+esp-hal-dhcp-server = "0.2.8"
+picoserve = "0.18.0"
 
+esp-backtrace = { version = "0.18.1", features = [
+    "esp32s3",
+    "defmt",
+    "panic-handler",
+] }
 embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { version = "0.9.0", features = ["defmt"] }

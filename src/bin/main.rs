@@ -8,9 +8,8 @@
 // #![deny(clippy::large_stack_frames)]
 pub const L2CAP_MTU: usize = 255;
 
-use core::cell::RefCell;
+use core::{cell::RefCell, default, net::Ipv4Addr};
 
-use embassy_net::Config;
 use embedded_hal::{digital::{InputPin, OutputPin}, spi::{ErrorType, SpiBus}};
 use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, Usb, UsbBus}, peripherals, spi, DriverMode};
 
@@ -23,9 +22,10 @@ use esp_hal::rmt::Rmt;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
-use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController}};
+use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice}};
 use static_cell::StaticCell;
 
+use embassy_net::{Stack, StackResources, Config, IpAddress, Ipv4Address, Ipv4Cidr};
 use smart_leds::{brightness, colors, SmartLedsWrite as _};
 
 use ssd1306::{mode::TerminalMode, prelude::*, I2CDisplayInterface, Ssd1306, command};
@@ -61,13 +61,16 @@ use ui::top_bar;
 
 use embedded_hal_bus::spi::ExclusiveDevice;
 
-use crate::services::{bluetooth::run, sd_monitor::sd_monitor_task};
+use esp_backtrace as _;
 
-#[panic_handler]
-fn panic(p: &core::panic::PanicInfo) -> ! {
-    error!("Panicked: {}", p.message().as_str());
-    loop {}
-}
+use crate::services::{bluetooth::run, sd_monitor::sd_monitor_task};
+use crate::services::*;
+
+// #[panic_handler]
+// fn panic(p: &core::panic::PanicInfo) -> ! {
+//     error!("Panicked: {}", p.message().as_str());
+//     loop {}
+// }
 
 extern crate alloc;
 
@@ -81,6 +84,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 )]
 
 static CS_CELL: StaticCell<RefCell<Output<'static>>> = StaticCell::new();
+
+static STACK: StaticCell<Stack> = StaticCell::new();
+static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
@@ -101,22 +107,12 @@ async fn main(spawner: Spawner) {
     let radio_init: &'static _ = Box::leak(Box::new(
         esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller")
     ));
-    let (mut _wifi_controller, _interfaces) =
-        esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default())
-            .expect("Failed to initialize Wi-Fi controller");
 
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
     let ble_controller = ExternalController::<_, 20>::new(transport);
-    let client_conf = ClientConfig::default()
-        .with_ssid(String::new())
-        .with_password(String::new());
-    let modeconf = ModeConfig::Client(client_conf);
 
     let usb = Usb::new(peripherals.USB0, peripherals.GPIO20, peripherals.GPIO19);
-
-    _wifi_controller.set_config(&modeconf).unwrap();
-    _wifi_controller.start().unwrap();
 
     let mut pulse_code = Box::leak(Box::new(smart_led_buffer!(1)));
     let frequency = Rate::from_mhz(80);
@@ -153,39 +149,35 @@ async fn main(spawner: Spawner) {
     display_bot.clear_buffer();
     display_bot.flush().unwrap();
     info!("Bottom display initialized");
-
-    // let text_style = MonoTextStyleBuilder::new()
-    //     .font(&FONT_6X10)
-    //     .text_color(BinaryColor::On)
-    //     .build();
-
-    // loop {
-    //     Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
-    //         .draw(&mut display_top)
-    //         .unwrap();
-    //     display_top.flush().unwrap();
-    //     for x in 0..128 {
-    //         for y in 0..32 {
-    //             display_bot.set_pixel(x, y, x % 2 == 0 && y % 2 == 0);
-    //         }
-    //     }
-    //     display_bot.flush().unwrap();
-    //     // rgb_led_r.set_high();
-    //     led.write(brightness([colors::RED].into_iter(), 10)).unwrap();
-    //     info!("Hello world!");
-    //     Timer::after(Duration::from_secs(1)).await;
-    //     // rgb_led_r.set_low();
-    //     led.write(brightness([colors::BLUE].into_iter(), 10)).unwrap();
-    //     Timer::after(Duration::from_secs(1)).await;
-    // }
     
     let btn_up = gpio::Input::new(peripherals.GPIO1, InputConfig::default().with_pull(gpio::Pull::Up));
     let btn_down = gpio::Input::new(peripherals.GPIO43, InputConfig::default().with_pull(gpio::Pull::Up));
     let btn_sel = gpio::Input::new(peripherals.GPIO44, InputConfig::default().with_pull(gpio::Pull::Up));
 
-    let wifi_ctrl: &'static mut WifiController<'static> = Box::leak(Box::new(_wifi_controller));
+    // spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
 
-    spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
+    let (wifi_controller, interfaces) = esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default()).unwrap();
+
+    // Configure static IP for the AP (Standard is 192.168.4.1)
+    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+        address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
+        gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
+        dns_servers: Default::default(),
+    });
+
+    let (stack, runner) = embassy_net::new(
+        interfaces.ap, 
+        config,
+        RESOURCES.init(StackResources::<3>::new()),
+        12345, // Seed
+    );
+
+    let stack = &*STACK.init(stack);
+    let wifi_ctrl_static = Box::leak(Box::new(wifi_controller));
+    spawner.spawn(wifi::net_task(runner)).unwrap();
+    spawner.spawn(wifi::wifi_ap_task(wifi_ctrl_static, stack)).unwrap();
+    spawner.spawn(wifi::dhcp_server_task(stack)).unwrap();
+
     spawner.spawn(services::led::led_task(led)).unwrap();
     spawner.spawn(button::button_task(btn_up, btn_down, btn_sel)).unwrap();
     spawner.spawn(ui::top_bar::status_task(display_top)).unwrap();
@@ -251,7 +243,7 @@ async fn main(spawner: Spawner) {
 }
 
 // TEMP FOR TESTING THE SD CARD
-struct DummyTime;
+pub struct DummyTime;
 
 impl TimeSource for DummyTime {
     fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {

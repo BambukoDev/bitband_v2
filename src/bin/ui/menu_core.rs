@@ -7,6 +7,7 @@ pub const MENU_DEPTH_MAX: usize = 4;
 pub enum Action {
     RunDuck(String<MAX_NAME>),
     ToggleBluetooth,
+    AccessPoint(bool),
     Reboot,
 }
 

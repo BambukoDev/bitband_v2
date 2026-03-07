@@ -33,6 +33,7 @@ use crate::top_bar::{TopBarMode, TOP_BAR_CH, draw_text_at};
 use crate::services::ducky::DUCKY_CH;
 use crate::ui::menu_core::*;
 use crate::ui::file_browser::*;
+use crate::services::wifi::*;
 
 // NEW CODE
 
@@ -142,6 +143,14 @@ pub static SETTINGS_MENU: StaticMenu = StaticMenu {
             label: "Bluetooth",
             action: MenuAction::Trigger(Action::ToggleBluetooth),
         },
+        MenuItem {
+            label: "Start AP",
+            action: MenuAction::Trigger(Action::AccessPoint(true)),
+        },
+        MenuItem {
+            label: "Stop AP",
+            action: MenuAction::Trigger(Action::AccessPoint(false)),
+        }
     ],
 };
 
@@ -263,6 +272,10 @@ pub async fn action_handler() {
 
             Action::ToggleBluetooth => {
                 info!("Toggling Bluetooth AP");
+            }
+
+            Action::AccessPoint(enable) => {
+                WIFI_SIGNAL.signal(enable);
             }
 
             Action::Reboot => {

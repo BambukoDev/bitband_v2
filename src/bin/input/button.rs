@@ -42,7 +42,6 @@ pub async fn button_task(
         if select.is_low() {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
             if select.is_low() {
-                PAUSE_BUTTON_CH.send(()).await;
                 handle_select_press(&mut select).await;
             }
         }
@@ -61,6 +60,7 @@ async fn handle_select_press(btn: &mut gpio::Input<'static>) {
         elapsed += POLL_MS;
 
         if elapsed >= LONG_PRESS_MS && !long_sent {
+            PAUSE_BUTTON_CH.send(()).await;
             BUTTON_CH.send(ButtonEvent::Back).await;
             long_sent = true;
         }

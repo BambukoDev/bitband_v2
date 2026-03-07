@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::string::ToString;
+use bt_hci::event::NumberOfCompletedDataBlocks;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_hal_bus::spi::RefCellDevice;
@@ -29,10 +30,22 @@ use crate::ui::top_bar::*;
 #[derive(Clone)]
 pub enum DuckCmd {
     Delay(u32),
+
+    String(heapless::String<128>),
+    StringLn(heapless::String<128>),
+
     Key { modifier: u8, key: u8 },
-    String(&'static str),
+
+    Hold { modifier: u8, key: u8 },
+    Release,
+
     Rem(heapless::String<64>),
+
     Pause,
+
+    DefaultDelay(u32),
+    RandomDelay(u32, u32),
+
     Repeat(u16),
 }
 
@@ -83,31 +96,6 @@ fn key_from_name(name: &str) -> Option<u8> {
     }
 }
 
-fn parse_combo(line: &str) -> Option<(u8, u8)> {
-    let mut modifier = 0u8;
-    let mut key_code = 0u8;
-
-    for part in line.split('+') {
-        match part {
-            "CTRL" => modifier |= MOD_CTRL,
-            "SHIFT" => modifier |= MOD_SHIFT,
-            "ALT" => modifier |= MOD_ALT,
-            "GUI" | "WINDOWS" => modifier |= MOD_GUI,
-            k => {
-                if let Some(code) = key_from_name(k) {
-                    key_code = code;
-                } else if k.len() == 1 {
-                    let (m, kcode) = ascii_to_key(k.as_bytes()[0]);
-                    modifier |= m;
-                    key_code = kcode;
-                }
-            }
-        }
-    }
-
-    if key_code == 0 { None } else { Some((modifier, key_code)) }
-}
-
 fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
     let line = line.trim();
 
@@ -116,14 +104,21 @@ fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
     }
 
     if line.starts_with("REM ") {
-        let text = &line[4..];
-
-        info!("[DUCKY] REM {}", text);
-
         let mut msg: heapless::String<64> = heapless::String::new();
-        let _ = msg.push_str(text); // truncate if too long
-        
+        let _ = msg.push_str(&line[4..]);
         return Some(DuckCmd::Rem(msg));
+    }
+
+    if line.starts_with("STRINGLN ") {
+        let mut s: heapless::String<128> = heapless::String::new();
+        let _ = s.push_str(&line[9..]);
+        return Some(DuckCmd::StringLn(s));
+    }
+
+    if line.starts_with("STRING ") {
+        let mut s: heapless::String<128> = heapless::String::new();
+        let _ = s.push_str(&line[7..]);
+        return Some(DuckCmd::String(s));
     }
 
     if line.starts_with("DELAY ") {
@@ -131,9 +126,9 @@ fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
         return Some(DuckCmd::Delay(ms));
     }
 
-    if line.starts_with("STRING ") {
-        let text = &line[7..];
-        return Some(DuckCmd::String(Box::leak(text.to_string().into_boxed_str())));
+    if line.starts_with("DEFAULT_DELAY ") {
+        let ms = line[14..].trim().parse().ok()?;
+        return Some(DuckCmd::DefaultDelay(ms));
     }
 
     if line == "PAUSE" {
@@ -145,11 +140,55 @@ fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
         return Some(DuckCmd::Repeat(n));
     }
 
-    if let Some((modifier, key)) = parse_combo(line) {
-        return Some(DuckCmd::Key { modifier, key });
+    if line.starts_with("RANDOM_DELAY ") {
+        let mut parts = line[13..].split_whitespace();
+        let min = parts.next()?.parse().ok()?;
+        let max = parts.next()?.parse().ok()?;
+
+        return Some(DuckCmd::RandomDelay(min, max));
     }
 
+    if line.starts_with("HOLD ") {
+        let token = &line[5..];
+
+        let (modifier, key) = parse_key_combo(token)?;
+        return Some(DuckCmd::Hold { modifier, key });
+    }
+
+    if line == "RELEASE" {
+        return Some(DuckCmd::Release);
+    }
+
+    if let Some((modifier, key)) = parse_key_combo(line) {
+        return Some(DuckCmd::Key { modifier, key });
+    }
     None
+}
+
+fn parse_key_combo(line: &str) -> Option<(u8, u8)> {
+    let mut modifier = 0;
+    let mut key = 0;
+
+    for token in line.split('+') {
+        match token {
+            "CTRL" | "CONTROL" => modifier |= MOD_CTRL,
+            "SHIFT" => modifier |= MOD_SHIFT,
+            "ALT" => modifier |= MOD_ALT,
+            "GUI" | "WINDOWS" => modifier |= MOD_GUI,
+
+            k => {
+                if let Some(code) = key_from_name(k) {
+                    key = code;
+                } else if k.len() == 1 {
+                    let (m, kcode) = ascii_to_key(k.as_bytes()[0]);
+                    modifier |= m;
+                    key = kcode;
+                }
+            },
+        }
+    }
+
+    if key == 0 { None } else { Some((modifier, key)) }
 }
 
 async fn press_key(modifier: u8, key: u8) {
@@ -184,9 +223,13 @@ pub async fn ducky_task(
 ) {
     info!("[DUCKY] task started");
     let mut last_cmd: Option<DuckCmd> = None;
+    let mut default_delay: u32 = 0;
+    let mut last_cmd: Option<DuckCmd> = None;
+    let mut rng_state: u32 = 0x12345678;
 
     loop {
         let filename = DUCKY_CH.receive().await;
+        PAUSE_BUTTON_CH.clear();
         info!("[DUCKY] received request: {}", filename);
 
         info!("Attempting to borrow CS");
@@ -270,27 +313,40 @@ pub async fn ducky_task(
                         if b == b'\n' || b == b'\r' {
                             if !partial_line.is_empty() {
                                 let line = str::from_utf8(&partial_line).unwrap_or("");
+                                let mut default_delay: u32 = 0;
+                                let mut last_cmd: Option<DuckCmd> = None;
+
                                 if let Some(cmd) = parse_ducky_line(line) {
-                                    match &cmd {
+                                    match cmd.clone() {
                                         DuckCmd::Repeat(n) => {
                                             if let Some(prev) = &last_cmd {
-                                                for _ in 0..*n {
+                                                for _ in 0..n {
                                                     execute_ducky_cmd(prev.clone()).await;
+
+                                                    if default_delay > 0 {
+                                                        Timer::after(Duration::from_millis(default_delay as u64)).await;
+                                                    }
                                                 }
                                             }
+                                        }
+
+                                        DuckCmd::DefaultDelay(ms) => {
+                                            default_delay = ms;
+                                        }
+
+                                        DuckCmd::RandomDelay(min, max) => {
+                                            let delay = rand_range(min, max, &mut rng_state);
+                                            Timer::after(Duration::from_millis(delay as u64)).await;
                                         }
 
                                         _ => {
                                             execute_ducky_cmd(cmd.clone()).await;
 
-                                            match cmd {
-                                                DuckCmd::Delay(_) |
-                                                DuckCmd::String(_) |
-                                                DuckCmd::Key { .. } => {
-                                                    last_cmd = Some(cmd);
-                                                }
-                                                _ => {}
+                                            if default_delay > 0 {
+                                                Timer::after(Duration::from_millis(default_delay as u64)).await;
                                             }
+
+                                            last_cmd = Some(cmd);
                                         }
                                     }
                                 }
@@ -323,6 +379,17 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
             }
         }
 
+        DuckCmd::StringLn(s) => {
+            for b in s.bytes() {
+                let (modifier, key) = ascii_to_key(b);
+                if key != 0 {
+                    press_key(modifier, key).await;
+                }
+            }
+
+            press_key(0, KEY_ENTER).await;
+        }
+
         DuckCmd::Rem(text) => {
             TOP_BAR_CH.send(TopBarMode::Message { text }).await;
         }
@@ -333,7 +400,10 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
 
         DuckCmd::Pause => {
             info!("[DUCKY] Waiting for button");
-            LED_CMD_CH.send(LedState::Blink(RGB { r:10,g:0,b:0 }, 100)).await;
+
+            LED_CMD_CH
+                .send(LedState::Blink(RGB { r:10,g:0,b:0 }, 100))
+                .await;
 
             let mut msg: heapless::String<64> = heapless::String::new();
             let _ = msg.push_str("PAUSED");
@@ -344,7 +414,36 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
 
             info!("[DUCKY] Resuming");
         }
-        
-        DuckCmd::Repeat(_) => { /* handled in ducky_task */}
+
+        DuckCmd::DefaultDelay(_) => {}
+
+        DuckCmd::Repeat(_) => {}
+
+        DuckCmd::Hold { modifier, key } => {
+            HID_CH
+                .send(KeyReport {
+                    modifier,
+                    keys: [key, 0, 0, 0, 0, 0],
+                })
+                .await;
+        }
+
+        DuckCmd::Release => {
+            HID_CH
+                .send(KeyReport {
+                    modifier: 0,
+                    keys: [0; 6],
+                })
+                .await;
+        }
+
+        DuckCmd::RandomDelay(min, max) => {
+            // handled by executor
+        }
     }
+}
+
+fn rand_range(min: u32, max: u32, state: &mut u32) -> u32 {
+    *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+    min + (*state % (max - min + 1))
 }
