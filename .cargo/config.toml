@@ -1,5 +1,5 @@
 [target.xtensa-esp32s3-none-elf]
-runner = "espflash flash --monitor --chip esp32s3 -p /dev/ttyACM1"
+runner = "espflash flash --monitor -L serial --chip esp32s3 -p /dev/ttyACM2"
 
 [env]
 DEFMT_LOG="info"

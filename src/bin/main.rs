@@ -21,7 +21,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::rmt::Rmt;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-use esp_println as _;
+// use esp_println as _;
 use esp_println::println;
 use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice}};
 use static_cell::StaticCell;

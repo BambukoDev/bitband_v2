@@ -9,3 +9,4 @@ pub mod led;
 pub mod sd_monitor;
 pub mod wifi;
 pub mod web;
+pub mod usb_logger;
