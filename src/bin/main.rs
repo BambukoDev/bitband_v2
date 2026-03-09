@@ -22,6 +22,7 @@ use esp_hal::rmt::Rmt;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
+use esp_println::println;
 use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice}};
 use static_cell::StaticCell;
 
@@ -66,6 +67,7 @@ use esp_backtrace as _;
 use crate::services::{bluetooth::run, sd_monitor::sd_monitor_task};
 use crate::services::*;
 
+// Replaced by esp_backtrace
 // #[panic_handler]
 // fn panic(p: &core::panic::PanicInfo) -> ! {
 //     error!("Panicked: {}", p.message().as_str());
@@ -154,11 +156,11 @@ async fn main(spawner: Spawner) {
     let btn_down = gpio::Input::new(peripherals.GPIO43, InputConfig::default().with_pull(gpio::Pull::Up));
     let btn_sel = gpio::Input::new(peripherals.GPIO44, InputConfig::default().with_pull(gpio::Pull::Up));
 
-    // spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
+    spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
 
     let (wifi_controller, interfaces) = esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default()).unwrap();
 
-    // Configure static IP for the AP (Standard is 192.168.4.1)
+    // Configure static IP for the AP
     let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
         address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
         gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
@@ -177,6 +179,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(wifi::net_task(runner)).unwrap();
     spawner.spawn(wifi::wifi_ap_task(wifi_ctrl_static, stack)).unwrap();
     spawner.spawn(wifi::dhcp_server_task(stack)).unwrap();
+    spawner.spawn(web::web_server_task(stack)).unwrap();
 
     spawner.spawn(services::led::led_task(led)).unwrap();
     spawner.spawn(button::button_task(btn_up, btn_down, btn_sel)).unwrap();
@@ -203,43 +206,13 @@ async fn main(spawner: Spawner) {
         .with_sck(sck);
     info!("SPI device created!");
     let shared_spi_bus = Box::leak(Box::new(RefCell::new(spi_bus)));
-    // let volume0 = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).expect("Failed to open volume 0");
-    // info!("Opened volume 0");
-    // let root_dir = volume0.open_root_dir().expect("Failed to open root directory");
-    // info!("Opened root dir");
-    //
-    // shared_spi_bus.borrow_mut().apply_config(&spi::master::Config::default()
-    //     .with_frequency(Rate::from_mhz(2))
-    //     .with_mode(spi::Mode::_0)
-    // ).expect("Failed to speed up the SD card");
-    // info!("Sped up the SD card");
-    //
-    // let mut file = root_dir.open_file_in_dir("test.txt", embedded_sdmmc::Mode::ReadWriteCreateOrAppend)
-    //     .expect("Failed to create test.txt");
-    // file.write("Amogus".as_bytes()).expect("Failed to write Amogus to test.txt");
-    // file.close().expect("Failed to close test.txt");
-    // root_dir.close().expect("Failed to close root dir");
-    // volume0.close().expect("Failed to close volume 0");
-    // info!("File creation test successful");
 
     let file_browser = ui::file_browser::get_file_browser();
     spawner.spawn(sd_monitor_task(cd, shared_spi_bus, cs_refcell, file_browser)).unwrap();
     spawner.spawn(services::ducky::ducky_task(shared_spi_bus, cs_refcell)).unwrap();
     spawner.spawn(ui::menu::menu_task(display_bot, file_browser)).unwrap();
 
-    // loop {
-    //     info!("KEEPALIVE");
-    //     led.write(brightness([colors::RED].into_iter(), 10)).unwrap();
-    //     Timer::after(Duration::from_millis(300)).await;
-    //     led.write(brightness([colors::GREEN].into_iter(), 10)).unwrap();
-    //     Timer::after(Duration::from_millis(300)).await;
-    //     led.write(brightness([colors::BLUE].into_iter(), 10)).unwrap();
-    //     Timer::after(Duration::from_millis(300)).await;
-    // }
-
     core::future::pending::<()>().await;
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
 }
 
 // TEMP FOR TESTING THE SD CARD
@@ -258,21 +231,9 @@ impl TimeSource for DummyTime {
     }
 }
 
-pub static SD_MGR: StaticCell<
-    VolumeManager<
-        SdCard<
-            RefCellDevice<
-                spi::master::Spi<'static, esp_hal::Blocking>,
-                Output<'static>,
-                esp_hal::delay::Delay
-            >,
-            esp_hal::delay::Delay
-        >,
-        DummyTime
-    >
-> = StaticCell::new();
+pub static SD_MGR: StaticCell<SdMgrType> = StaticCell::new();
 
-type SD_MGR_TYPE =
+type SdMgrType =
     VolumeManager<
         SdCard<
             RefCellDevice<'static,

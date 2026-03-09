@@ -8,3 +8,4 @@ pub mod usb_keyboard;
 pub mod led;
 pub mod sd_monitor;
 pub mod wifi;
+pub mod web;

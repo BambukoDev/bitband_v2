@@ -43,12 +43,9 @@ pub async fn sd_monitor_task(
         }
 
         info!("[SD] Card Inserted. Initializing...");
-        // Scoped block to prevent deadlock of cs pin
         {
-            // Borrow the CS pin from the RefCell so it isn't "moved" and lost
             let mut cs_borrow = cs_pin.borrow_mut();
             
-            // Use the borrow in the device creation
             let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).expect("Failed to create SPI device!");
             let mut sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
 

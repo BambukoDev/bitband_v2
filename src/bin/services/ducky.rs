@@ -231,6 +231,7 @@ pub async fn ducky_task(
         let filename = DUCKY_CH.receive().await;
         PAUSE_BUTTON_CH.clear();
         info!("[DUCKY] received request: {}", filename);
+        LED_CMD_CH.send(LedState::Blink(RGB { r: 0, g: 0, b: 255 }, 10)).await;
 
         info!("Attempting to borrow CS");
 
@@ -281,27 +282,22 @@ pub async fn ducky_task(
                 }).unwrap()
             }
         };
-
-        info!("Iterating directory...");
-        ducky_dir.iterate_dir(|file| {
-            let filename = str::from_utf8(file.name.base_name()).expect("Failed to parse file name");
-            let extension = str::from_utf8(file.name.extension()).expect("Failed to parse file extension");
-            info!("{}.{}", filename, extension);
-        }).expect("Failed to iterate directory");
-
         let mut file = match ducky_dir.open_file_in_dir(
             filename.as_str(),
             embedded_sdmmc::Mode::ReadOnly,
         ) {
             Ok(f) => f,
             Err(e) => {
-                error!("[DUCKY] open_file failed");
-                continue;
+                error!("[DUCKY] Could not find or open file: {}", filename.as_str());
+                LED_CMD_CH.send(LedState::Blink(RGB { r: 255, g: 0, b: 0 }, 10)).await;
+                // Clear the channel/state so the web server knows we are free again
+                continue; 
             }
         };
 
         info!("[DUCKY] file opened successfully");
 
+        LED_CMD_CH.send(LedState::Blink(RGB { r: 0, g: 255, b: 0 }, 10)).await;
         let mut buf = [0u8; 64];
         let mut partial_line = Vec::new();
 

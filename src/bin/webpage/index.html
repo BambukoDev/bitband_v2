@@ -1,0 +1,31 @@
+<html>
+<head><title>BitBandV2 Remote</title></head>
+<body style='font-family:sans-serif; text-align:center; padding-top:50px;'>
+    <h1>BitBandV2 Ducky Console</h1>
+    <div style='display:flex; flex-direction:column; gap:10px; align-items:center;'>
+        <button onclick="run('PAYLOAD.DUC')" style='padding:15px; width:200px;'>Run payload.duc</button>
+        <button onclick="run('TEST.DUC')" style='padding:15px; width:200px;'>Run test.duc</button>
+    </div>
+    <p id='status'></p>
+
+    <script>
+        async function run(file) {
+            const status = document.getElementById('status');
+            status.innerText = 'Sending request...';
+            try {
+                const res = await fetch(`/run?file=${encodeURIComponent(file)}`, { 
+                    method: 'POST' 
+                });
+                
+                if (res.ok) { 
+                    status.innerText = '✔ Script Started'; 
+                } else { 
+                    status.innerText = '✖ Busy or Error: ' + res.status; 
+                }
+            } catch (e) { 
+                status.innerText = '✖ Connection failed'; 
+            }
+        }
+    </script>
+</body>
+</html>

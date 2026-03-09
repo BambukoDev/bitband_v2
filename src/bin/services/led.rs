@@ -20,7 +20,6 @@ pub async fn led_task(mut led: SmartLedsAdapter<'static, 25>) {
     let mut current_state = LedState::Off;
 
     loop {
-        // Use `race` pattern to either handle new commands or keep blinking
         match &current_state {
             LedState::Off => {
                 let _ = led.write([RGB { r: 0, g: 0, b: 0 }]).ok();
@@ -38,7 +37,6 @@ pub async fn led_task(mut led: SmartLedsAdapter<'static, 25>) {
                 let _ = led.write([RGB { r: 0, g: 0, b: 0 }]).ok();
                 Timer::after(Duration::from_millis(*interval / 2)).await;
 
-                // Non-blocking check if a new command is available
                 if let Ok(new_state) = LED_CMD_CH.try_receive() {
                     current_state = new_state;
                 }
