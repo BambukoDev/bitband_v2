@@ -88,8 +88,10 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 static CS_CELL: StaticCell<RefCell<Output<'static>>> = StaticCell::new();
 
-static STACK: StaticCell<Stack> = StaticCell::new();
-static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static AP_STACK: StaticCell<Stack> = StaticCell::new();
+static AP_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+static STA_STACK: StaticCell<Stack> = StaticCell::new();
+static STA_RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
@@ -162,28 +164,37 @@ async fn main(spawner: Spawner) {
     let (wifi_controller, interfaces) = esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default()).unwrap();
 
     // Configure static IP for the AP
-    // let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-    //     address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
-    //     gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
-    //     dns_servers: Default::default(),
-    // });
+    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+        address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
+        gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
+        dns_servers: Default::default(),
+    });
 
-    let config = embassy_net::Config::dhcpv4(Default::default());
-
-    let (stack, runner) = embassy_net::new(
-        interfaces.sta,
+    let (ap_stack, ap_runner) = embassy_net::new(
+        interfaces.ap,
         config,
-        RESOURCES.init(StackResources::<3>::new()),
+        AP_RESOURCES.init(StackResources::<3>::new()),
         12345, // Seed
     );
 
-    let stack = &*STACK.init(stack);
+    let config = embassy_net::Config::dhcpv4(Default::default());
+
+    let (sta_stack, sta_runner) = embassy_net::new(
+        interfaces.sta,
+        config,
+        STA_RESOURCES.init(StackResources::<3>::new()),
+        12345, // Seed
+    );
+
+    let ap_stack = &*AP_STACK.init(ap_stack);
+    let sta_stack = &*STA_STACK.init(sta_stack);
     let wifi_ctrl_static = Box::leak(Box::new(wifi_controller));
 
-    spawner.spawn(wifi::net_task(runner)).unwrap();
-    spawner.spawn(wifi::wifi_ap_task(wifi_ctrl_static, stack)).unwrap();
-    spawner.spawn(wifi::dhcp_server_task(stack)).unwrap();
-    spawner.spawn(web::web_server_task(stack)).unwrap();
+    spawner.spawn(wifi::ap_net_task(ap_runner)).unwrap();
+    spawner.spawn(wifi::sta_net_task(sta_runner)).unwrap();
+    spawner.spawn(wifi::wifi_task(wifi_ctrl_static, ap_stack, sta_stack)).unwrap();
+    spawner.spawn(wifi::dhcp_server_task(ap_stack)).unwrap();
+    spawner.spawn(web::web_server_task(ap_stack, sta_stack)).unwrap();
 
     spawner.spawn(services::led::led_task(led)).unwrap();
     spawner.spawn(button::button_task(btn_up, btn_down, btn_sel)).unwrap();

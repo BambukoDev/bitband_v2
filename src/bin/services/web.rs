@@ -1,5 +1,6 @@
 use core::error;
 
+use alloc::vec::Vec;
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{Duration, Timer};
 use picoserve::routing::get_service;
@@ -14,7 +15,7 @@ use picoserve::response::{Directory, File, StatusCode};
 use crate::services::ducky::DUCKY_CH;
 use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use crate::services::wifi::{WifiMode, WIFI_MODE_SIGNAL};
 
 #[derive(serde::Deserialize)]
@@ -28,12 +29,17 @@ struct WifiCredentials {
     pass: String,
 }
 
+#[derive(serde::Serialize)]
+struct FileListResponse {
+    files: Vec<String>,
+}
+
 fn make_router() -> Router<impl picoserve::routing::PathRouter> {
     Router::new()
         .route("/", get_service(File::html(include_str!("../webpage/index.html"))))
         .route("/run", post(handle_run_ducky))
-        // New Route
         .route("/configure_wifi", post(handle_wifi_config)) 
+        .route("/list_files", get(handle_list_files))
 }
 
 async fn handle_wifi_config(
@@ -43,6 +49,20 @@ async fn handle_wifi_config(
     WIFI_MODE_SIGNAL.signal(WifiMode::Sta(creds.ssid, creds.pass));
 
     (StatusCode::OK, "Switching to Station Mode...")
+}
+
+async fn handle_list_files() -> impl picoserve::response::IntoResponse {
+    info!("Sending file list");
+    unsafe {
+        crate::services::sd_monitor::FILES.lock_mut(|f| {
+            let mut files = Vec::new();
+            for entry in f.iter() {
+                info!("{}", entry.name);
+                files.push(entry.name.to_string());
+            }
+            picoserve::response::Json(FileListResponse { files })
+        })
+    }
 }
 
 async fn handle_run_ducky(
@@ -66,7 +86,10 @@ async fn handle_run_ducky(
 }
 
 #[embassy_executor::task]
-pub async fn web_server_task(stack: &'static Stack<'static>) {
+pub async fn web_server_task(
+    ap_stack: &'static Stack<'static>,
+    sta_stack: &'static Stack<'static>
+) {
     // Buffers for the TCP stack
     let mut rx_buffer = [0; 1024];
     let mut tx_buffer = [0; 1024];
@@ -78,11 +101,17 @@ pub async fn web_server_task(stack: &'static Stack<'static>) {
     let router = make_router();
 
     loop {
-        if !stack.is_link_up() {
-            Timer::after(Duration::from_millis(500)).await;
+        let stack;
+        if ap_stack.is_link_up() {
+            info!("AP stack selected");
+            stack = ap_stack;
+        } else if sta_stack.is_link_up() {
+            info!("STA stack selected");
+            stack = sta_stack;
+        } else {
+            Timer::after_millis(500).await;
             continue;
         }
-
         info!("Web interface created");
 
         let mut socket = TcpSocket::new(*stack, &mut rx_buffer, &mut tx_buffer);

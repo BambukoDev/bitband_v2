@@ -23,9 +23,10 @@ pub enum WifiMode {
 }
 
 #[embassy_executor::task]
-pub async fn wifi_ap_task(
+pub async fn wifi_task(
     controller: &'static mut WifiController<'static>,
-    stack: &'static Stack<'static>,
+    ap_stack: &'static Stack<'static>,
+    sta_stack: &'static Stack<'static>,
 ) {
     loop {
         let mode = WIFI_MODE_SIGNAL.wait().await;
@@ -42,7 +43,7 @@ pub async fn wifi_ap_task(
                     dns_servers: Default::default(),
                 };
                 
-                stack.set_config_v4(embassy_net::ConfigV4::Static(config));
+                ap_stack.set_config_v4(embassy_net::ConfigV4::Static(config));
 
                 let ap_config = AccessPointConfig::default()
                     .with_ssid("BitBandV2".to_string())
@@ -52,7 +53,7 @@ pub async fn wifi_ap_task(
                 controller.start().unwrap();
 
                 for i in 1..=5 {
-                    if stack.is_link_up() {
+                    if ap_stack.is_link_up() {
                         info!("AP Started");
                     }
                     Timer::after_millis(500).await;
@@ -71,7 +72,7 @@ pub async fn wifi_ap_task(
 
                 let mut config = DhcpConfig::default();
                 config.hostname = core::convert::TryInto::try_into("BitBandV2").ok();
-                stack.set_config_v4(embassy_net::ConfigV4::Dhcp(config));
+                sta_stack.set_config_v4(embassy_net::ConfigV4::Dhcp(config));
 
                 let client_config = ClientConfig::default()
                     .with_ssid(ssid.to_string())
@@ -84,8 +85,8 @@ pub async fn wifi_ap_task(
                 Timer::after_secs(1).await;
 
                 for i in 1..=40 {
-                    if stack.is_link_up() {
-                        if let Some(config) = stack.config_v4() {
+                    if sta_stack.is_link_up() {
+                        if let Some(config) = sta_stack.config_v4() {
                             let ip = config.address.address();
                             if !ip.is_unspecified() {
                                 info!("Connected! IP: {}", ip);
@@ -100,7 +101,7 @@ pub async fn wifi_ap_task(
                     }
                     Timer::after_millis(500).await;
                 }
-                if (!stack.is_link_up()) {
+                if (!sta_stack.is_link_up()) {
                     error!("Failed to connect :(");
                 }
             }
@@ -119,8 +120,6 @@ pub async fn wifi_ap_task(
 #[embassy_executor::task]
 pub async fn dhcp_server_task(stack: &'static Stack<'static>) {
     loop {
-        info!("Stack Link: {}", stack.is_link_up());
-        info!("Condif: {}", stack.is_config_up());
         if stack.is_link_up() /* && !IS_STA.load(core::sync::atomic::Ordering::SeqCst) */ {
             if let Some(cfg) = stack.config_v4() {
                 if cfg.address.address() == Ipv4Address::new(192, 168, 4, 1) {
@@ -150,6 +149,10 @@ pub async fn dhcp_server_task(stack: &'static Stack<'static>) {
 }
 
 #[embassy_executor::task]
-pub async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) -> ! {
+pub async fn ap_net_task(mut runner: Runner<'static, WifiDevice<'static>>) -> ! {
+    runner.run().await
+}
+#[embassy_executor::task]
+pub async fn sta_net_task(mut runner: Runner<'static, WifiDevice<'static>>) -> ! {
     runner.run().await
 }

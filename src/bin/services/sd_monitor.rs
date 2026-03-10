@@ -1,3 +1,5 @@
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::SdCard;
 use embedded_sdmmc::VolumeManager;
@@ -21,6 +23,8 @@ use crate::ui::file_browser::{FileEntry, FileMenu, MAX_FILES, MAX_NAME};
 use crate::services::led::*;
 use crate::DummyTime;
 use esp_println::println;
+
+pub static FILES: Mutex<CriticalSectionRawMutex, Vec<FileEntry, MAX_FILES>> = Mutex::new(Vec::<FileEntry, MAX_FILES>::new());
 
 #[embassy_executor::task]
 pub async fn sd_monitor_task(
@@ -66,7 +70,13 @@ pub async fn sd_monitor_task(
                                         let base = core::str::from_utf8(file.name.base_name()).unwrap_or("");
                                         let ext = core::str::from_utf8(file.name.extension()).unwrap_or("");
                                         let _ = write!(name, "{}.{}", base, ext);
-                                        let _ = new_entries.push(FileEntry { name });
+                                        let file_entry = FileEntry { name };
+                                        let _ = new_entries.push(file_entry.clone());
+                                        unsafe {
+                                            FILES.lock_mut(|e| {
+                                                let _ = e.push(file_entry.clone());
+                                            });
+                                        }
                                     }
                                 });
                                 // Update the menu task's data

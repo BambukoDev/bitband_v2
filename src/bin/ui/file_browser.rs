@@ -16,6 +16,7 @@ static LABEL_BUFFER: BlockingMutex<CriticalSectionRawMutex, RefCell<String<MAX_N
 pub const MAX_FILES: usize = 32;
 pub const MAX_NAME: usize = 32;
 
+#[derive(Clone)]
 pub struct FileEntry {
     pub name: String<MAX_NAME>,
 }
@@ -30,28 +31,21 @@ impl MenuSource for FileMenu {
     fn title(&self) -> &str { self.title }
 
     fn len(&self) -> usize {
-        // In a real app, you'd handle the async lock or use a light blocking mutex
-        // For simplicity in this UI pattern:
         self.entries.try_lock().map(|e| e.len()).unwrap_or(0)
     }
 
     fn label(&self, index: usize) -> &str {
         let mut result = "";
         
-        // 1. Try to lock the entries to get the filename
         if let Ok(entries) = self.entries.try_lock() {
             if let Some(entry) = entries.get(index) {
                 let name_str = entry.name.as_str();
                 
-                // 2. Lock the global scratch buffer and copy the string into it
                 LABEL_BUFFER.lock(|buf| {
                     let mut b = buf.borrow_mut();
                     b.clear();
                     let _ = b.push_str(name_str);
                     
-                    // 3. We create a pointer to the static buffer's content.
-                    // This is safe because LABEL_BUFFER is 'static and we 
-                    // only use this &str immediately for rendering the current line.
                     unsafe {
                         let ptr = b.as_str().as_ptr();
                         let len = b.len();
@@ -64,7 +58,6 @@ impl MenuSource for FileMenu {
     }
 
     fn action(&self, index: usize) -> MenuAction {
-        // For the action, we can just clone the string and pass it to the channel
         if let Ok(entries) = self.entries.try_lock() {
             if let Some(entry) = entries.get(index) {
                 return MenuAction::Trigger(Action::RunDuck(entry.name.clone()));
@@ -75,7 +68,7 @@ impl MenuSource for FileMenu {
     }
 }
 
-static FILE_BROWSER_CELL: StaticCell<FileMenu> = StaticCell::new();
+pub static FILE_BROWSER_CELL: StaticCell<FileMenu> = StaticCell::new();
 
 pub fn get_file_browser() -> &'static FileMenu {
     FILE_BROWSER_CELL.init(FileMenu {
@@ -83,10 +76,3 @@ pub fn get_file_browser() -> &'static FileMenu {
         entries: Mutex::new(Vec::new()),
     })
 }
-
-// pub fn get_file_browser() -> &'static mut FileMenu {
-//     FILE_BROWSER_CELL.init(FileMenu {
-//         title: "Payloads",
-//         entries: Vec::new(),
-//     })
-// }

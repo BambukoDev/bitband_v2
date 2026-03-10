@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html>
 <head>
     <title>BitBandV2 Remote</title>
@@ -5,25 +6,33 @@
     <style>
         body { font-family: sans-serif; text-align: center; background: #121212; color: #e0e0e0; padding: 20px; }
         .card { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        button { padding: 12px; width: 200px; margin: 5px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; }
+        button { padding: 12px; width: 220px; margin: 8px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; transition: opacity 0.2s; }
+        button:active { opacity: 0.7; }
         .btn-blue { background: #2196F3; color: white; }
         .btn-green { background: #4CAF50; color: white; }
+        .btn-refresh { background: #555; color: white; width: auto; padding: 8px 15px; font-size: 0.8em; }
         input { padding: 12px; width: 200px; margin: 5px; border-radius: 5px; border: 1px solid #333; background: #2c2c2c; color: white; }
-        #status { margin-top: 20px; color: #ff9800; font-weight: bold; }
+        #status { margin-top: 20px; color: #ff9800; font-weight: bold; min-height: 1.2em; }
+        .file-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 15px; }
+        .loader { color: #888; font-style: italic; }
     </style>
 </head>
 <body>
     <h1>BitBandV2 Console</h1>
     
     <div class="card">
-        <h3>Ducky Payloads</h3>
-        <button class="btn-blue" onclick="run('PAYLOAD.DUC')">Run payload.duc</button>
-        <button class="btn-blue" onclick="run('TEST.DUC')">Run test.duc</button>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">Ducky Payloads</h3>
+            <button class="btn-refresh" onclick="loadFiles()">Refresh List</button>
+        </div>
+        <div id="payload-list" class="file-container">
+            <p class="loader">Scanning SD card for .DUC files...</p>
+        </div>
     </div>
 
     <div class="card">
         <h3>WiFi Configuration</h3>
-        <p style="font-size: 0.8em; color: #888;">Enter credentials to switch from AP to Client mode.</p>
+        <p style="font-size: 0.8em; color: #888;">Switch from Access Point to Station (Client) mode.</p>
         <input type="text" id="ssid" placeholder="WiFi SSID"><br>
         <input type="password" id="pass" placeholder="Password"><br>
         <button class="btn-green" onclick="saveWifi()">Connect & Save</button>
@@ -32,13 +41,52 @@
     <p id="status">System Ready</p>
 
     <script>
+        // Fetch files from the SD card via the Rust backend
+        async function loadFiles() {
+            const listContainer = document.getElementById('payload-list');
+            const status = document.getElementById('status');
+            
+            listContainer.innerHTML = '<p class="loader">Loading...</p>';
+            
+            try {
+                // This hits the new route you'll add to web.rs
+                const res = await fetch('/list_files');
+                if (!res.ok) throw new Error("Failed to fetch");
+                
+                const data = await res.json();
+                
+                if (!data.files || data.files.length === 0) {
+                    listContainer.innerHTML = '<p style="color: #888;">No files found in /DUCKY folder.</p>';
+                    return;
+                }
+
+                listContainer.innerHTML = ''; // Clear loader
+                
+                data.files.forEach(filename => {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-blue';
+                    btn.innerText = filename;
+                    btn.onclick = () => run(filename);
+                    listContainer.appendChild(btn);
+                });
+                
+                status.innerText = "File list updated";
+            } catch (e) {
+                listContainer.innerHTML = '<p style="color: #f44336;">Error: Could not load file list.</p>';
+                status.innerText = "Connection error";
+            }
+        }
+
         async function run(file) {
             const status = document.getElementById('status');
             status.innerText = `Executing ${file}...`;
             try {
+                // Uses the existing POST /run route
                 const res = await fetch(`/run?file=${encodeURIComponent(file)}`, { method: 'POST' });
-                status.innerText = res.ok ? '✔ Executed' : '✖ Error: ' + res.status;
-            } catch (e) { status.innerText = '✖ Connection lost'; }
+                status.innerText = res.ok ? `✔ Executed: ${file}` : '✖ System Busy or Error';
+            } catch (e) { 
+                status.innerText = '✖ Connection lost'; 
+            }
         }
 
         async function saveWifi() {
@@ -47,19 +95,25 @@
             const status = document.getElementById('status');
             
             if (!ssid) { alert("SSID required"); return; }
-            status.innerText = 'Saving... Device will vanish from this AP shortly.';
+            status.innerText = 'Applying settings...';
 
             try {
+                // Uses the existing POST /configure_wifi route
                 const response = await fetch('/configure_wifi', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ssid, pass })
                 });
                 if (response.ok) {
-                    status.innerHTML = '✔ <b>Saved!</b><br>Device is connecting to ' + ssid + '.<br>Check the device screen for the new IP.';
+                    status.innerHTML = '✔ <b>Saved!</b><br>Connecting to ' + ssid + '...<br>Check device screen for new IP.';
                 }
-            } catch (e) { status.innerText = '✖ Request failed'; }
+            } catch (e) { 
+                status.innerText = '✖ Request failed'; 
+            }
         }
+
+        // Initialize file list on page load
+        window.onload = loadFiles;
     </script>
 </body>
 </html>
