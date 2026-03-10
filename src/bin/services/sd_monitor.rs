@@ -20,6 +20,7 @@ use esp_hal::spi::master::Spi;
 use crate::ui::file_browser::{FileEntry, FileMenu, MAX_FILES, MAX_NAME};
 use crate::services::led::*;
 use crate::DummyTime;
+use esp_println::println;
 
 #[embassy_executor::task]
 pub async fn sd_monitor_task(

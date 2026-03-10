@@ -1,30 +1,64 @@
 <html>
-<head><title>BitBandV2 Remote</title></head>
-<body style='font-family:sans-serif; text-align:center; padding-top:50px;'>
-    <h1>BitBandV2 Ducky Console</h1>
-    <div style='display:flex; flex-direction:column; gap:10px; align-items:center;'>
-        <button onclick="run('PAYLOAD.DUC')" style='padding:15px; width:200px;'>Run payload.duc</button>
-        <button onclick="run('TEST.DUC')" style='padding:15px; width:200px;'>Run test.duc</button>
+<head>
+    <title>BitBandV2 Remote</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #121212; color: #e0e0e0; padding: 20px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        button { padding: 12px; width: 200px; margin: 5px; cursor: pointer; border-radius: 5px; border: none; font-weight: bold; }
+        .btn-blue { background: #2196F3; color: white; }
+        .btn-green { background: #4CAF50; color: white; }
+        input { padding: 12px; width: 200px; margin: 5px; border-radius: 5px; border: 1px solid #333; background: #2c2c2c; color: white; }
+        #status { margin-top: 20px; color: #ff9800; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>BitBandV2 Console</h1>
+    
+    <div class="card">
+        <h3>Ducky Payloads</h3>
+        <button class="btn-blue" onclick="run('PAYLOAD.DUC')">Run payload.duc</button>
+        <button class="btn-blue" onclick="run('TEST.DUC')">Run test.duc</button>
     </div>
-    <p id='status'></p>
+
+    <div class="card">
+        <h3>WiFi Configuration</h3>
+        <p style="font-size: 0.8em; color: #888;">Enter credentials to switch from AP to Client mode.</p>
+        <input type="text" id="ssid" placeholder="WiFi SSID"><br>
+        <input type="password" id="pass" placeholder="Password"><br>
+        <button class="btn-green" onclick="saveWifi()">Connect & Save</button>
+    </div>
+
+    <p id="status">System Ready</p>
 
     <script>
         async function run(file) {
             const status = document.getElementById('status');
-            status.innerText = 'Sending request...';
+            status.innerText = `Executing ${file}...`;
             try {
-                const res = await fetch(`/run?file=${encodeURIComponent(file)}`, { 
-                    method: 'POST' 
+                const res = await fetch(`/run?file=${encodeURIComponent(file)}`, { method: 'POST' });
+                status.innerText = res.ok ? '✔ Executed' : '✖ Error: ' + res.status;
+            } catch (e) { status.innerText = '✖ Connection lost'; }
+        }
+
+        async function saveWifi() {
+            const ssid = document.getElementById('ssid').value;
+            const pass = document.getElementById('pass').value;
+            const status = document.getElementById('status');
+            
+            if (!ssid) { alert("SSID required"); return; }
+            status.innerText = 'Saving... Device will vanish from this AP shortly.';
+
+            try {
+                const response = await fetch('/configure_wifi', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ssid, pass })
                 });
-                
-                if (res.ok) { 
-                    status.innerText = '✔ Script Started'; 
-                } else { 
-                    status.innerText = '✖ Busy or Error: ' + res.status; 
+                if (response.ok) {
+                    status.innerHTML = '✔ <b>Saved!</b><br>Device is connecting to ' + ssid + '.<br>Check the device screen for the new IP.';
                 }
-            } catch (e) { 
-                status.innerText = '✖ Connection failed'; 
-            }
+            } catch (e) { status.innerText = '✖ Request failed'; }
         }
     </script>
 </body>

@@ -11,7 +11,7 @@ use esp_radio::wifi::ScanConfig;
 use esp_radio::wifi::WifiController;
 use ssd1306::{prelude::*, mode::BufferedGraphicsMode};
 use esp_hal::i2c;
-use esp_hal::peripherals;
+use esp_hal::peripherals::{self, WIFI};
 use ssd1306::{mode::TerminalMode, prelude::*, I2CDisplayInterface, Ssd1306, command};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
@@ -19,7 +19,7 @@ use embedded_graphics::{
     prelude::*,
     text::{Baseline, Text}
 };
-use defmt::info;
+use defmt::{info, warn, error};
 
 use alloc::vec::Vec;
 use alloc::boxed::Box;
@@ -33,7 +33,7 @@ use crate::top_bar::{TopBarMode, TOP_BAR_CH, draw_text_at};
 use crate::services::ducky::DUCKY_CH;
 use crate::ui::menu_core::*;
 use crate::ui::file_browser::*;
-use crate::services::wifi::*;
+use crate::services::{nvs, wifi::*};
 
 // NEW CODE
 
@@ -144,12 +144,16 @@ pub static SETTINGS_MENU: StaticMenu = StaticMenu {
             action: MenuAction::Trigger(Action::ToggleBluetooth),
         },
         MenuItem {
-            label: "Start AP",
-            action: MenuAction::Trigger(Action::AccessPoint(true)),
+            label: "Access Point",
+            action: MenuAction::Trigger(Action::AccessPoint),
         },
         MenuItem {
-            label: "Stop AP",
-            action: MenuAction::Trigger(Action::AccessPoint(false)),
+            label: "WiFi Connect",
+            action: MenuAction::Trigger(Action::WiFiConnect),
+        },
+        MenuItem {
+            label: "Disconnect WiFi",
+            action: MenuAction::Trigger(Action::WiFiDisable),
         }
     ],
 };
@@ -274,8 +278,23 @@ pub async fn action_handler() {
                 info!("Toggling Bluetooth AP");
             }
 
-            Action::AccessPoint(enable) => {
-                WIFI_SIGNAL.signal(enable);
+            Action::AccessPoint => {
+                WIFI_MODE_SIGNAL.signal(WifiMode::Ap);
+            }
+
+            Action::WiFiConnect => {
+                let creds = match nvs::load_wifi_credentials() {
+                    Some(c) => c,
+                    None => {
+                        error!("Credentials missing!");
+                        continue;
+                    }
+                };
+                WIFI_MODE_SIGNAL.signal(WifiMode::Sta(creds.ssid, creds.password));
+            }
+
+            Action::WiFiDisable => {
+                WIFI_MODE_SIGNAL.signal(WifiMode::Disabled);
             }
 
             Action::Reboot => {

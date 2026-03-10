@@ -1,6 +1,5 @@
 use alloc::string::String;
 use alloc::string::ToString;
-use bt_hci::event::NumberOfCompletedDataBlocks;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embedded_hal_bus::spi::RefCellDevice;
@@ -18,7 +17,7 @@ use crate::ui::file_browser::MAX_NAME;
 use embassy_executor::task;
 use embassy_time::{Duration, Timer};
 use embedded_sdmmc::{VolumeManager, TimeSource};
-use defmt::{error, info};
+use defmt::{error, info, warn};
 use alloc::{boxed::Box, vec::Vec};
 
 use core::cell::RefCell;
@@ -240,7 +239,7 @@ pub async fn ducky_task(
             if let Ok(b) = cs_pin.try_borrow_mut() {
                 break b;
             }
-            info!("CS busy, retrying...");
+            warn!("CS busy, retrying...");
             Timer::after(Duration::from_millis(100)).await;
         };
 

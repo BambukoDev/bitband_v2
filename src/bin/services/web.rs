@@ -12,24 +12,37 @@ use picoserve::{
 use defmt::{info, error};
 use picoserve::response::{Directory, File, StatusCode};
 use crate::services::ducky::DUCKY_CH;
+use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
 use alloc::string::String;
+use crate::services::wifi::{WifiMode, WIFI_MODE_SIGNAL};
 
 #[derive(serde::Deserialize)]
 struct RunQuery {
     file: String,
 }
 
+#[derive(serde::Deserialize)]
+struct WifiCredentials {
+    ssid: String,
+    pass: String,
+}
+
 fn make_router() -> Router<impl picoserve::routing::PathRouter> {
     Router::new()
         .route("/", get_service(File::html(include_str!("../webpage/index.html"))))
-        .nest_service("/static", const {
-            Directory {
-                files: &[("index.css", File::css(include_str!("../webpage/style.css")))],
-                ..Directory::DEFAULT
-            }
-        })
         .route("/run", post(handle_run_ducky))
+        // New Route
+        .route("/configure_wifi", post(handle_wifi_config)) 
+}
+
+async fn handle_wifi_config(
+    picoserve::extract::Json(creds): picoserve::extract::Json<WifiCredentials>
+) -> impl picoserve::response::IntoResponse {
+    nvs::save_wifi_credentials(creds.ssid.as_str(), creds.pass.as_str());
+    WIFI_MODE_SIGNAL.signal(WifiMode::Sta(creds.ssid, creds.pass));
+
+    (StatusCode::OK, "Switching to Station Mode...")
 }
 
 async fn handle_run_ducky(
@@ -48,7 +61,7 @@ async fn handle_run_ducky(
         return (StatusCode::SERVICE_UNAVAILABLE, "System Busy");
     }
 
-    defmt::info!("Web command: Queued {}", filename_raw.as_str());
+    defmt::println!("Web command: Queued {}", filename_raw.as_str());
     (StatusCode::OK, "OK")
 }
 
@@ -70,6 +83,8 @@ pub async fn web_server_task(stack: &'static Stack<'static>) {
             continue;
         }
 
+        info!("Web interface created");
+
         let mut socket = TcpSocket::new(*stack, &mut rx_buffer, &mut tx_buffer);
         Timer::after(Duration::from_millis(10)).await;
         
@@ -82,7 +97,7 @@ pub async fn web_server_task(stack: &'static Stack<'static>) {
         let server = Server::new(&router, &config, &mut http_buffer);
 
         match server.serve(socket).await {
-            Ok(_) => defmt::info!("HTTP session closed"),
+            Ok(_) => defmt::println!("HTTP session closed"),
             Err(e) => defmt::error!("Picoserve error: {:?}", e),
         }
     }

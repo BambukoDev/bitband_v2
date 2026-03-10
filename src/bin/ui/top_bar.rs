@@ -1,4 +1,3 @@
-use bt_hci::event::le::LeBigSyncEstablished;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     channel::Channel,

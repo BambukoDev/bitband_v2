@@ -14,14 +14,15 @@ use embedded_hal::{digital::{InputPin, OutputPin}, spi::{ErrorType, SpiBus}};
 use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, Usb, UsbBus}, peripherals, spi, DriverMode};
 
 use bt_hci::{cmd::info, controller::ExternalController};
-use defmt::{error, info};
+// use log::{error, info};
+use defmt::{info, error};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::rmt::Rmt;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
-// use esp_println as _;
+use esp_println as _;
 use esp_println::println;
 use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice}};
 use static_cell::StaticCell;
@@ -152,23 +153,25 @@ async fn main(spawner: Spawner) {
     display_bot.flush().unwrap();
     info!("Bottom display initialized");
     
-    let btn_up = gpio::Input::new(peripherals.GPIO1, InputConfig::default().with_pull(gpio::Pull::Up));
-    let btn_down = gpio::Input::new(peripherals.GPIO43, InputConfig::default().with_pull(gpio::Pull::Up));
-    let btn_sel = gpio::Input::new(peripherals.GPIO44, InputConfig::default().with_pull(gpio::Pull::Up));
+    let btn_up = gpio::Input::new(peripherals.GPIO2, InputConfig::default().with_pull(gpio::Pull::Up));
+    let btn_down = gpio::Input::new(peripherals.GPIO9, InputConfig::default().with_pull(gpio::Pull::Up));
+    let btn_sel = gpio::Input::new(peripherals.GPIO1, InputConfig::default().with_pull(gpio::Pull::Up));
 
     spawner.spawn(services::usb_keyboard::usb_keyboard_task(usb)).unwrap();
 
     let (wifi_controller, interfaces) = esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default()).unwrap();
 
     // Configure static IP for the AP
-    let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
-        gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
-        dns_servers: Default::default(),
-    });
+    // let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
+    //     address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(192, 168, 4, 1), 24),
+    //     gateway: Some(embassy_net::Ipv4Address::new(192, 168, 4, 1)),
+    //     dns_servers: Default::default(),
+    // });
+
+    let config = embassy_net::Config::dhcpv4(Default::default());
 
     let (stack, runner) = embassy_net::new(
-        interfaces.ap, 
+        interfaces.sta,
         config,
         RESOURCES.init(StackResources::<3>::new()),
         12345, // Seed
@@ -176,6 +179,7 @@ async fn main(spawner: Spawner) {
 
     let stack = &*STACK.init(stack);
     let wifi_ctrl_static = Box::leak(Box::new(wifi_controller));
+
     spawner.spawn(wifi::net_task(runner)).unwrap();
     spawner.spawn(wifi::wifi_ap_task(wifi_ctrl_static, stack)).unwrap();
     spawner.spawn(wifi::dhcp_server_task(stack)).unwrap();
@@ -189,7 +193,7 @@ async fn main(spawner: Spawner) {
     // spawner.spawn(services::bluetooth::bluetooth_task(ble_controller)).unwrap();
     // spawner.spawn(services::clock::clock_task()).unwrap();
 
-    let cd = Input::new(peripherals.GPIO15, InputConfig::default().with_pull(Pull::Up));
+    let cd = Input::new(peripherals.GPIO8, InputConfig::default().with_pull(Pull::Up));
     let cs = Output::new(peripherals.GPIO10, gpio::Level::High, OutputConfig::default());
     let cs_refcell = CS_CELL.init(RefCell::new(cs));
     let sck = peripherals.GPIO12;

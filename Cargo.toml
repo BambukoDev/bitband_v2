@@ -23,16 +23,16 @@ defmt = "1.0.1"
 esp-bootloader-esp-idf = { version = "0.4.0", features = ["defmt", "esp32s3"] }
 
 embassy-net = { version = "0.8.0", features = [
-  "defmt",
-  "dhcpv4",
-  "tcp",
-  "udp",
-  "proto-ipv4",
-  "medium-ip",
-  "alloc",
+    "defmt",
+    "dhcpv4-hostname",
+    "tcp",
+    "udp",
+    "proto-ipv4",
+    "medium-ip",
+    "alloc",
 ] }
 esp-hal-dhcp-server = "0.2.8"
-picoserve = { version = "0.18.0", features = ["embassy", "defmt"] }
+picoserve = { version = "0.18.0", features = ["embassy", "defmt", "json"] }
 
 esp-backtrace = { version = "0.18.1", features = [
     "esp32s3",
@@ -42,8 +42,10 @@ esp-backtrace = { version = "0.18.1", features = [
 embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { version = "0.9.0", features = ["defmt"] }
-esp-println = { version = "0.16.1", default-features = false, features = ["esp32s3", "uart"] }
+esp-println = { version = "0.16.1", default-features = false, features = ["defmt-espflash", "esp32s3", "uart", "critical-section"] }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
+esp-storage = { version = "0.8.1", features = ["esp32s3", "defmt"] }
+esp-nvs = { version = "0.3.0", features = ["esp32s3", "defmt"]}
 
 # for more networking protocol support see https://crates.io/crates/edge-net
 bt-hci = "0.6.0"
@@ -98,6 +100,9 @@ embassy-usb = "0.5.1"
 usbd-hid = "0.9.0"
 heapless = "0.9.2"
 usb-device = "0.3.2"
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
 
 [profile.dev]
 # Rust debug is too slow.
