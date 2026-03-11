@@ -112,8 +112,84 @@
             }
         }
 
-        // Initialize file list on page load
+        async function runRaw() {
+            const scriptText = document.getElementById('live-script').value;
+            const status = document.getElementById('status');
+            
+            status.innerText = "Sending form data...";
+
+            try {
+                // This helper handles all newlines, spaces, and special symbols
+                const formData = new URLSearchParams();
+                formData.append('script', scriptText);
+
+                const res = await fetch('/run_raw', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/x-www-form-urlencoded' 
+                    },
+                    body: formData.toString()
+                });
+
+                if (res.ok) {
+                    status.innerText = "✔ Running live script";
+                } else {
+                    const err = await res.text();
+                    status.innerText = "✖ Server Error: " + err;
+                }
+            } catch (e) {
+                status.innerText = "✖ Connection Error";
+            }
+        }
+
+        async function resumeScript() {
+            try {
+                const res = await fetch('/resume', { 
+                    method: 'POST',
+                });
+                if (res.ok) {
+                    document.getElementById('resume-btn').style.display = 'none';
+                }
+            } catch (e) { console.error("Resume failed", e); }
+        }
+
+        async function updateStatus() {
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                
+                const statusEl = document.getElementById('status');
+                const resumeBtn = document.getElementById('resume-btn');
+
+                if (data.state === 'paused') {
+                    statusEl.innerHTML = "<b style='color:#ff9800'>⏸ SCRIPT PAUSED</b>";
+                    resumeBtn.style.display = 'inline-block';
+                } else if (data.state === 'running') {
+                    statusEl.innerText = "🏃 Executing...";
+                    resumeBtn.style.display = 'none';
+                } else {
+                    // Only hide the button if the state is truly idle
+                    statusEl.innerText = "Ready";
+                    resumeBtn.style.display = 'none';
+                }
+            } catch (e) { /* connection jitter */ }
+        }
+
+        // Start polling every 1.5 seconds
+        setInterval(updateStatus, 500);
+
         window.onload = loadFiles;
+    </script>
+    <div class="card">
+        <h3>Live Script Execution</h3>
+        <textarea id="live-script" style="width: 90%; height: 100px; background: #2c2c2c; color: #00ff00; font-family: monospace; border: 1px solid #444; padding: 10px;" placeholder="STRING Hello World&#10;ENTER"></textarea>
+        <br>
+        <button class="btn-green" onclick="runRaw()">Execute Live</button>
+        <button id="resume-btn" class="btn-blue" style="display:none; background: #f44336;" onclick="resumeScript()">RESUME PAUSED SCRIPT</button>
+    </div>
+
+    <script>
+
     </script>
 </body>
 </html>

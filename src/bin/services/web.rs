@@ -1,8 +1,10 @@
 use core::error;
+use core::sync::atomic::Ordering;
 
 use alloc::vec::Vec;
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{Duration, Timer};
+use picoserve::extract::{Form, Query};
 use picoserve::routing::get_service;
 use picoserve::{
     routing::get,
@@ -10,13 +12,13 @@ use picoserve::{
     Config, Router,
     Server, Timeouts,
 };
-use defmt::{info, error};
+use defmt::{info, error, warn};
 use picoserve::response::{Directory, File, StatusCode};
-use crate::services::ducky::DUCKY_CH;
 use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
 use alloc::string::{String, ToString};
 use crate::services::wifi::{WifiMode, WIFI_MODE_SIGNAL};
+use crate::services::ducky::{DIRECT_EXEC_CH, DUCKY_CH, DUCKY_STATE, PAUSE_BUTTON_CH};
 
 #[derive(serde::Deserialize)]
 struct RunQuery {
@@ -29,17 +31,60 @@ struct WifiCredentials {
     pass: String,
 }
 
+#[derive(serde::Deserialize)]
+struct DuckyForm {
+    script: String,
+}
+
 #[derive(serde::Serialize)]
 struct FileListResponse {
     files: Vec<String>,
+}
+
+
+#[derive(serde::Serialize)]
+struct StatusResponse {
+    state: &'static str,
 }
 
 fn make_router() -> Router<impl picoserve::routing::PathRouter> {
     Router::new()
         .route("/", get_service(File::html(include_str!("../webpage/index.html"))))
         .route("/run", post(handle_run_ducky))
+        .route("/run_raw", post(handle_run_raw))
+        .route("/resume", post(handle_resume))
+        .route("/status", get(handle_get_status))
         .route("/configure_wifi", post(handle_wifi_config)) 
         .route("/list_files", get(handle_list_files))
+}
+
+async fn handle_get_status() -> impl picoserve::response::IntoResponse {
+    let state = match DUCKY_STATE.load(Ordering::Relaxed) {
+        1 => "running",
+        2 => "paused",
+        _ => "idle",
+    };
+    picoserve::response::Json(StatusResponse { state })
+}
+
+async fn handle_run_raw(
+    Form(payload): Form<DuckyForm>
+) -> impl picoserve::response::IntoResponse {
+    if payload.script.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Empty script");
+    }
+
+    // Send the decoded string to the Ducky channel
+    if DIRECT_EXEC_CH.try_send(payload.script).is_err() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "System Busy");
+    }
+
+    (StatusCode::OK, "Executing Form Script...")
+}
+
+async fn handle_resume() -> impl picoserve::response::IntoResponse {
+    let _ = PAUSE_BUTTON_CH.try_send(());
+    (StatusCode::OK, "Resumed")
 }
 
 async fn handle_wifi_config(
@@ -57,7 +102,6 @@ async fn handle_list_files() -> impl picoserve::response::IntoResponse {
         crate::services::sd_monitor::FILES.lock_mut(|f| {
             let mut files = Vec::new();
             for entry in f.iter() {
-                info!("{}", entry.name);
                 files.push(entry.name.to_string());
             }
             picoserve::response::Json(FileListResponse { files })
@@ -91,43 +135,31 @@ pub async fn web_server_task(
     sta_stack: &'static Stack<'static>
 ) {
     // Buffers for the TCP stack
-    let mut rx_buffer = [0; 1024];
+    let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 1024];
     
     // Buffer for the HTTP server's internal operations
-    let mut http_buffer = [0; 2048];
+    let mut http_buffer = [0; 8192];
 
     let config = Config::new(picoserve::Timeouts::default());
     let router = make_router();
 
     loop {
-        let stack;
-        if ap_stack.is_link_up() {
-            info!("AP stack selected");
-            stack = ap_stack;
-        } else if sta_stack.is_link_up() {
-            info!("STA stack selected");
-            stack = sta_stack;
-        } else {
-            Timer::after_millis(500).await;
-            continue;
-        }
-        info!("Web interface created");
+        let stack = if ap_stack.is_link_up() { ap_stack } 
+                    else if sta_stack.is_link_up() { sta_stack } 
+                    else { Timer::after_millis(500).await; continue; };
 
         let mut socket = TcpSocket::new(*stack, &mut rx_buffer, &mut tx_buffer);
-        Timer::after(Duration::from_millis(10)).await;
-        
-        if let Err(e) = socket.accept(80).await {
-            error!("Socket failed: {:?}", e);
-            Timer::after(Duration::from_millis(100)).await;
-            continue;
-        }
+        socket.set_timeout(Some(Duration::from_secs(10)));
+
+        if let Err(_e) = socket.accept(80).await { continue; }
 
         let server = Server::new(&router, &config, &mut http_buffer);
-
+        
         match server.serve(socket).await {
-            Ok(_) => defmt::println!("HTTP session closed"),
-            Err(e) => defmt::error!("Picoserve error: {:?}", e),
+            Ok(_) => {},
+            Err(e) => error!("Picoserve error: {:?}", e),
         }
+        Timer::after_millis(50).await;
     }
 }

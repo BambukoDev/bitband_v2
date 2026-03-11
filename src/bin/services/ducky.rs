@@ -1,7 +1,9 @@
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::filesystem::ToShortFileName;
 use embedded_sdmmc::SdCard;
@@ -21,6 +23,8 @@ use defmt::{error, info, warn};
 use alloc::{boxed::Box, vec::Vec};
 
 use core::cell::RefCell;
+use core::sync::atomic::AtomicU8;
+use core::sync::atomic::Ordering;
 use esp_hal::spi::master::Spi;
 
 use crate::services::led::{LED_CMD_CH, LedState};
@@ -59,6 +63,18 @@ pub static PAUSE_BUTTON_CH: Channel<
     (),
     2
 > = Channel::new();
+
+pub static DIRECT_EXEC_CH: Channel<
+    CriticalSectionRawMutex,
+    String,
+    2,
+> = Channel::new();
+
+// Global signal to track the state of the executor
+// 1 -> Running
+// 2 -> Paused
+// other -> idle
+pub static DUCKY_STATE: AtomicU8 = AtomicU8::new(0);
 
 static mut LAST_CMD: Option<DuckCmd> = None;
 
@@ -221,142 +237,116 @@ pub async fn ducky_task(
     cs_pin: &'static RefCell<Output<'static>>,
 ) {
     info!("[DUCKY] task started");
-    let mut last_cmd: Option<DuckCmd> = None;
-    let mut default_delay: u32 = 0;
-    let mut last_cmd: Option<DuckCmd> = None;
     let mut rng_state: u32 = 0x12345678;
 
     loop {
-        let filename = DUCKY_CH.receive().await;
-        PAUSE_BUTTON_CH.clear();
-        info!("[DUCKY] received request: {}", filename);
-        LED_CMD_CH.send(LedState::Blink(RGB { r: 0, g: 0, b: 255 }, 10)).await;
+        // Wait for either a filename or a raw script string
+        let script_to_run = embassy_futures::select::select(
+            DUCKY_CH.receive(),
+            DIRECT_EXEC_CH.receive()
+        ).await;
 
-        info!("Attempting to borrow CS");
-
-        // Try to borrow. If the monitor is currently scanning, we wait briefly and try again.
-        let mut cs_borrow = loop {
-            if let Ok(b) = cs_pin.try_borrow_mut() {
-                break b;
+        match script_to_run {
+            // Received a filename from the Web File List
+            embassy_futures::select::Either::First(filename) => {
+                info!("[DUCKY] Running file: {}", filename);
+                if let Some(content) = read_file_to_string(filename, spi_bus, cs_pin).await {
+                    execute_full_script(&content, &mut rng_state).await;
+                }
             }
-            warn!("CS busy, retrying...");
-            Timer::after(Duration::from_millis(100)).await;
-        };
-
-        info!("Borrowed CS successfully");
-
-        // 2. Re-initialize the SPI device and SD card locally
-        let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).inspect_err(|f| {
-            error!("Failed to create SPI device on Ducky!");
-        }).unwrap();
-        let mut sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
-
-        // 3. Initialize VolumeManager only when needed
-        let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
-
-        let volume = match volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("[DUCKY] open_volume failed");
-                continue;
+            // Received raw text from the Live Editor
+            embassy_futures::select::Either::Second(raw_script) => {
+                info!("[DUCKY] Running live script");
+                execute_full_script(&raw_script, &mut rng_state).await;
             }
-        };
-
-        let root = match volume.open_root_dir() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("[DUCKY] open_root_dir failed");
-                continue;
-            }
-        };
+        }
         
-        let ducky_dir = match root.open_dir("DUCKY") {
-            Ok(d) => d,
-            Err(_) => {
-                root.make_dir_in_dir("DUCKY").inspect_err(|_| {
-                    error!("Failed to make DUCKY dir");
-                }).unwrap();
-                root.open_dir("DUCKY").inspect_err(|_| {
-                    error!("Failed to open DUCKY dir");
-                }).unwrap()
-            }
-        };
-        let mut file = match ducky_dir.open_file_in_dir(
-            filename.as_str(),
-            embedded_sdmmc::Mode::ReadOnly,
-        ) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("[DUCKY] Could not find or open file: {}", filename.as_str());
-                LED_CMD_CH.send(LedState::Blink(RGB { r: 255, g: 0, b: 0 }, 10)).await;
-                // Clear the channel/state so the web server knows we are free again
-                continue; 
-            }
-        };
+        info!("[DUCKY] Execution finished");
+        LED_CMD_CH.send(LedState::Off).await;
+    }
+}
 
-        info!("[DUCKY] file opened successfully");
+async fn read_file_to_string(
+    filename: heapless::String<MAX_NAME>,
+    spi_bus: &'static RefCell<Spi<'static, Blocking>>, 
+    cs_pin: &'static RefCell<Output<'static>>,
+) -> Option<String> {
+    // 1. Borrow CS Pin
+    let mut cs_borrow = loop {
+        if let Ok(b) = cs_pin.try_borrow_mut() {
+            break b;
+        }
+        Timer::after(Duration::from_millis(50)).await;
+    };
 
-        LED_CMD_CH.send(LedState::Blink(RGB { r: 0, g: 255, b: 0 }, 10)).await;
-        let mut buf = [0u8; 64];
-        let mut partial_line = Vec::new();
+    // 2. Setup SD Stack
+    let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).ok()?;
+    let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
+    let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
 
-        loop {
-            match file.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    for &b in &buf[..n] {
-                        if b == b'\n' || b == b'\r' {
-                            if !partial_line.is_empty() {
-                                let line = str::from_utf8(&partial_line).unwrap_or("");
-                                let mut default_delay: u32 = 0;
-                                let mut last_cmd: Option<DuckCmd> = None;
+    let mut volume = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).ok()?;
+    let root = volume.open_root_dir().ok()?;
+    let ducky_dir = root.open_dir("DUCKY").ok()?;
+    
+    let mut file = ducky_dir.open_file_in_dir(
+        filename.as_str(),
+        embedded_sdmmc::Mode::ReadOnly,
+    ).ok()?;
 
-                                if let Some(cmd) = parse_ducky_line(line) {
-                                    match cmd.clone() {
-                                        DuckCmd::Repeat(n) => {
-                                            if let Some(prev) = &last_cmd {
-                                                for _ in 0..n {
-                                                    execute_ducky_cmd(prev.clone()).await;
+    // 3. Read into String
+    let mut content = String::new();
+    let mut buf = [0u8; 128];
+    while let Ok(n) = file.read(&mut buf) {
+        if n == 0 { break; }
+        if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+            content.push_str(s);
+        }
+    }
+    Some(content)
+}
 
-                                                    if default_delay > 0 {
-                                                        Timer::after(Duration::from_millis(default_delay as u64)).await;
-                                                    }
-                                                }
-                                            }
-                                        }
+async fn execute_full_script(content: &str, rng_state: &mut u32) {
+    DUCKY_STATE.store(1, Ordering::Relaxed);
+    let mut default_delay: u32 = 0;
+    let mut last_cmd: Option<DuckCmd> = None;
 
-                                        DuckCmd::DefaultDelay(ms) => {
-                                            default_delay = ms;
-                                        }
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
 
-                                        DuckCmd::RandomDelay(min, max) => {
-                                            let delay = rand_range(min, max, &mut rng_state);
-                                            Timer::after(Duration::from_millis(delay as u64)).await;
-                                        }
-
-                                        _ => {
-                                            execute_ducky_cmd(cmd.clone()).await;
-
-                                            if default_delay > 0 {
-                                                Timer::after(Duration::from_millis(default_delay as u64)).await;
-                                            }
-
-                                            last_cmd = Some(cmd);
-                                        }
-                                    }
-                                }
-                                partial_line.clear();
+        if let Some(cmd) = parse_ducky_line(line) {
+            match cmd.clone() {
+                DuckCmd::Repeat(n) => {
+                    if let Some(prev) = &last_cmd {
+                        for _ in 0..n {
+                            execute_ducky_cmd(prev.clone()).await;
+                            if default_delay > 0 { 
+                                Timer::after(Duration::from_millis(default_delay as u64)).await; 
                             }
-                        } else {
-                            partial_line.push(b);
                         }
                     }
                 }
-                Err(_) => break,
+
+                DuckCmd::DefaultDelay(ms) => {
+                    default_delay = ms;
+                }
+
+                DuckCmd::RandomDelay(min, max) => {
+                    let delay = rand_range(min, max, rng_state);
+                    Timer::after(Duration::from_millis(delay as u64)).await;
+                }
+
+                _ => {
+                    execute_ducky_cmd(cmd.clone()).await;
+                    if default_delay > 0 {
+                        Timer::after(Duration::from_millis(default_delay as u64)).await;
+                    }
+                    last_cmd = Some(cmd);
+                }
             }
         }
-        info!("[DUCKY] script finished");
     }
+    DUCKY_STATE.store(0, Ordering::Relaxed);
 }
 
 async fn execute_ducky_cmd(cmd: DuckCmd) {
@@ -394,20 +384,12 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
         }
 
         DuckCmd::Pause => {
-            info!("[DUCKY] Waiting for button");
-
-            LED_CMD_CH
-                .send(LedState::Blink(RGB { r:10,g:0,b:0 }, 100))
-                .await;
-
-            let mut msg: heapless::String<64> = heapless::String::new();
-            let _ = msg.push_str("PAUSED");
-
-            TOP_BAR_CH.send(TopBarMode::Message { text: msg }).await;
-
+            DUCKY_STATE.store(2, Ordering::Relaxed);
+            let mut text: heapless::String<64> = heapless::String::new();
+            let _ = text.push_str("PAUSED");
+            TOP_BAR_CH.send(TopBarMode::Message { text }).await;
             PAUSE_BUTTON_CH.receive().await;
-
-            info!("[DUCKY] Resuming");
+            DUCKY_STATE.store(1, Ordering::Relaxed);
         }
 
         DuckCmd::DefaultDelay(_) => {}
