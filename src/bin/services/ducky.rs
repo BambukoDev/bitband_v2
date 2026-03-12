@@ -37,9 +37,9 @@ pub enum DuckCmd {
     String(heapless::String<128>),
     StringLn(heapless::String<128>),
 
-    Key { modifier: u8, key: u8 },
+    Key { modifier: u8, keys: Vec<u8> },
 
-    Hold { modifier: u8, key: u8 },
+    Hold { modifier: u8, keys: Vec<u8> },
     Release,
 
     Rem(heapless::String<64>),
@@ -76,10 +76,24 @@ pub static DIRECT_EXEC_CH: Channel<
 // other -> idle
 pub static DUCKY_STATE: AtomicU8 = AtomicU8::new(0);
 
+pub static READ_FILE_CH: Channel<CriticalSectionRawMutex, String, 1> = Channel::new();
+pub static READ_FILE_CONTENTS: Channel<CriticalSectionRawMutex, String, 1> = Channel::new();
+
 static mut LAST_CMD: Option<DuckCmd> = None;
 
-const KEY_PRESS_MS: u64 = 30;
-const KEY_RELEASE_MS: u64 = 15;
+const KEY_PRESS_MS: u64 = 15;
+const KEY_RELEASE_MS: u64 = 8;
+
+static CURRENT_REPORT: embassy_sync::blocking_mutex::Mutex<CriticalSectionRawMutex, core::cell::RefCell<KeyReport>> = 
+    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(KeyReport {
+        modifier: 0,
+        keys: [0; 6],
+    }));
+
+async fn sync_hid() {
+    let report = CURRENT_REPORT.lock(|cell| *cell.borrow());
+    HID_CH.send(report).await;
+}
 
 fn key_from_name(name: &str) -> Option<u8> {
     match name {
@@ -166,44 +180,43 @@ fn parse_ducky_line(line: &str) -> Option<DuckCmd> {
     if line.starts_with("HOLD ") {
         let token = &line[5..];
 
-        let (modifier, key) = parse_key_combo(token)?;
-        return Some(DuckCmd::Hold { modifier, key });
+        let (modifier, keys) = parse_key_combo(token)?;
+        return Some(DuckCmd::Hold { modifier, keys });
     }
 
     if line == "RELEASE" {
         return Some(DuckCmd::Release);
     }
 
-    if let Some((modifier, key)) = parse_key_combo(line) {
-        return Some(DuckCmd::Key { modifier, key });
+    if let Some((modifier, keys)) = parse_key_combo(line) {
+        return Some(DuckCmd::Key { modifier, keys });
     }
     None
 }
 
-fn parse_key_combo(line: &str) -> Option<(u8, u8)> {
+fn parse_key_combo(line: &str) -> Option<(u8, Vec<u8>)> {
     let mut modifier = 0;
-    let mut key = 0;
+    let mut keys = Vec::new();
 
     for token in line.split('+') {
-        match token {
+        let t = token.trim();
+        match t {
             "CTRL" | "CONTROL" => modifier |= MOD_CTRL,
             "SHIFT" => modifier |= MOD_SHIFT,
             "ALT" => modifier |= MOD_ALT,
             "GUI" | "WINDOWS" => modifier |= MOD_GUI,
-
             k => {
                 if let Some(code) = key_from_name(k) {
-                    key = code;
+                    keys.push(code);
                 } else if k.len() == 1 {
                     let (m, kcode) = ascii_to_key(k.as_bytes()[0]);
                     modifier |= m;
-                    key = kcode;
+                    keys.push(kcode);
                 }
             },
         }
     }
-
-    if key == 0 { None } else { Some((modifier, key)) }
+    if keys.is_empty() && modifier == 0 { None } else { Some((modifier, keys)) }
 }
 
 async fn press_key(modifier: u8, key: u8) {
@@ -241,23 +254,27 @@ pub async fn ducky_task(
 
     loop {
         // Wait for either a filename or a raw script string
-        let script_to_run = embassy_futures::select::select(
+        let script_to_run = embassy_futures::select::select3(
             DUCKY_CH.receive(),
-            DIRECT_EXEC_CH.receive()
+            DIRECT_EXEC_CH.receive(),
+            READ_FILE_CH.receive(),
         ).await;
 
         match script_to_run {
             // Received a filename from the Web File List
-            embassy_futures::select::Either::First(filename) => {
+            embassy_futures::select::Either3::First(filename) => {
                 info!("[DUCKY] Running file: {}", filename);
-                if let Some(content) = read_file_to_string(filename, spi_bus, cs_pin).await {
+                if let Some(content) = read_file_to_string(filename.as_str(), spi_bus, cs_pin).await {
                     execute_full_script(&content, &mut rng_state).await;
                 }
             }
             // Received raw text from the Live Editor
-            embassy_futures::select::Either::Second(raw_script) => {
+            embassy_futures::select::Either3::Second(raw_script) => {
                 info!("[DUCKY] Running live script");
                 execute_full_script(&raw_script, &mut rng_state).await;
+            }
+            embassy_futures::select::Either3::Third(filename) => {
+                READ_FILE_CONTENTS.send(read_file_to_string(filename.as_str(), spi_bus, cs_pin).await.unwrap()).await;
             }
         }
         
@@ -266,20 +283,19 @@ pub async fn ducky_task(
     }
 }
 
-async fn read_file_to_string(
-    filename: heapless::String<MAX_NAME>,
+pub async fn read_file_to_string(
+    filename: &str,
     spi_bus: &'static RefCell<Spi<'static, Blocking>>, 
     cs_pin: &'static RefCell<Output<'static>>,
 ) -> Option<String> {
-    // 1. Borrow CS Pin
+    // Borrow CS Pin with a small retry loop to avoid collisions with the SD monitor or Ducky task
     let mut cs_borrow = loop {
         if let Ok(b) = cs_pin.try_borrow_mut() {
             break b;
         }
-        Timer::after(Duration::from_millis(50)).await;
+        Timer::after(Duration::from_millis(10)).await;
     };
 
-    // 2. Setup SD Stack
     let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).ok()?;
     let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
     let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
@@ -289,13 +305,12 @@ async fn read_file_to_string(
     let ducky_dir = root.open_dir("DUCKY").ok()?;
     
     let mut file = ducky_dir.open_file_in_dir(
-        filename.as_str(),
+        filename,
         embedded_sdmmc::Mode::ReadOnly,
     ).ok()?;
 
-    // 3. Read into String
     let mut content = String::new();
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; 256]; 
     while let Ok(n) = file.read(&mut buf) {
         if n == 0 { break; }
         if let Ok(s) = core::str::from_utf8(&buf[..n]) {
@@ -379,8 +394,42 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
             TOP_BAR_CH.send(TopBarMode::Message { text }).await;
         }
 
-        DuckCmd::Key { modifier, key } => {
-            press_key(modifier, key).await;
+        DuckCmd::Hold { modifier, keys } => {
+            CURRENT_REPORT.lock(|cell| {
+                let mut report = cell.borrow_mut();
+                report.modifier |= modifier;
+                for k in keys {
+                    if !report.keys.contains(&k) {
+                        if let Some(slot) = report.keys.iter_mut().find(|s| **s == 0) {
+                            *slot = k;
+                        }
+                    }
+                }
+            });
+            sync_hid().await;
+        }
+
+        DuckCmd::Release => {
+            CURRENT_REPORT.lock(|cell| {
+                *cell.borrow_mut() = KeyReport { modifier: 0, keys: [0; 6] };
+            });
+            sync_hid().await;
+        }
+
+        DuckCmd::Key { modifier, keys } => {
+            // Merge with currently held keys
+            let mut report = CURRENT_REPORT.lock(|cell| *cell.borrow());
+            report.modifier |= modifier;
+            for (i, k) in keys.iter().enumerate().take(6) {
+                report.keys[i] = *k; 
+            }
+            
+            HID_CH.send(report).await;
+            Timer::after(Duration::from_millis(KEY_PRESS_MS)).await;
+            
+            // Return to the "Hold" state
+            sync_hid().await;
+            Timer::after(Duration::from_millis(KEY_RELEASE_MS)).await;
         }
 
         DuckCmd::Pause => {
@@ -396,22 +445,20 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
 
         DuckCmd::Repeat(_) => {}
 
-        DuckCmd::Hold { modifier, key } => {
-            HID_CH
-                .send(KeyReport {
-                    modifier,
-                    keys: [key, 0, 0, 0, 0, 0],
-                })
-                .await;
-        }
-
-        DuckCmd::Release => {
-            HID_CH
-                .send(KeyReport {
-                    modifier: 0,
-                    keys: [0; 6],
-                })
-                .await;
+        DuckCmd::Key { modifier, keys } => {
+            // Merge with currently held keys
+            let mut report = CURRENT_REPORT.lock(|cell| *cell.borrow());
+            report.modifier |= modifier;
+            for (i, k) in keys.iter().enumerate().take(6) {
+                report.keys[i] = *k; 
+            }
+            
+            HID_CH.send(report).await;
+            Timer::after(Duration::from_millis(KEY_PRESS_MS)).await;
+            
+            // Return to the "Hold" state
+            sync_hid().await;
+            Timer::after(Duration::from_millis(KEY_RELEASE_MS)).await;
         }
 
         DuckCmd::RandomDelay(min, max) => {

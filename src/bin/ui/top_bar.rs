@@ -90,11 +90,13 @@ pub async fn status_task(mut display: Display) {
             }
 
             TopBarMode::Message { ref text } => {
-                draw_text_at(
+                draw_scrolling_text(
                     &mut display,
                     text.as_str(),
                     0,
                     0,
+                    128,
+                    tick,
                     style,
                 );
             }
@@ -149,13 +151,28 @@ fn draw_scrolling_text(
     tick: u32,
     style: MonoTextStyle<'_, BinaryColor>
 ) {
-    let w = text_width(text);
+    let text_w = text_width(text);
+    let gap = 20; // Pixels between the end of the text and the start of the repeat
 
-    if w <= max_width {
+    if text_w <= max_width {
+        // If it fits, just draw it statically
         draw_text_at(display, text, x, y, style);
     } else {
-        let scroll = (tick / 2) as i32 % (w + 10);
-        draw_text_at(display, text, x - scroll, y, style);
+        // Calculate scroll offset based on tick
+        // Adjust the divisor (4) to change scroll speed
+        let total_loop_len = text_w + gap;
+        let scroll_offset = ((tick / 8) as i32) % total_loop_len;
+
+        // Draw the first instance
+        draw_text_at(display, text, x - scroll_offset, y, style);
+
+        // Draw the second instance following it (for seamless looping)
+        if scroll_offset > 0 {
+            draw_text_at(display, text, x - scroll_offset + total_loop_len, y, style);
+        }
+        
+        // IMPORTANT: In a real UI, you'd want to draw a black rectangle 
+        // over the areas outside 'max_width' to "clip" the scrolling text.
     }
 }
 

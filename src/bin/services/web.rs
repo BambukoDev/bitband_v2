@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 use alloc::vec::Vec;
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{Duration, Timer};
-use picoserve::extract::{Form, Query};
+use picoserve::extract::{Form, Json, Query};
 use picoserve::routing::get_service;
 use picoserve::{
     routing::get,
@@ -18,10 +18,15 @@ use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
 use alloc::string::{String, ToString};
 use crate::services::wifi::{WifiMode, WIFI_MODE_SIGNAL};
-use crate::services::ducky::{DIRECT_EXEC_CH, DUCKY_CH, DUCKY_STATE, PAUSE_BUTTON_CH};
+use crate::services::ducky::{DIRECT_EXEC_CH, DUCKY_CH, DUCKY_STATE, PAUSE_BUTTON_CH, READ_FILE_CH, READ_FILE_CONTENTS};
 
 #[derive(serde::Deserialize)]
 struct RunQuery {
+    file: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ReadQuery {
     file: String,
 }
 
@@ -41,6 +46,10 @@ struct FileListResponse {
     files: Vec<String>,
 }
 
+#[derive(serde::Serialize)]
+struct FileContentResponse {
+    contents: String,
+}
 
 #[derive(serde::Serialize)]
 struct StatusResponse {
@@ -56,6 +65,26 @@ fn make_router() -> Router<impl picoserve::routing::PathRouter> {
         .route("/status", get(handle_get_status))
         .route("/configure_wifi", post(handle_wifi_config)) 
         .route("/list_files", get(handle_list_files))
+        .route("/get_file", post(handle_get_file))
+}
+
+// IMPL for get_file
+async fn handle_get_file(
+    Json(file): Json<ReadQuery>
+) -> impl picoserve::response::IntoResponse {
+    if file.file.is_empty() {
+        // return (StatusCode::BAD_REQUEST, "Empty filename");
+        return picoserve::response::Json(FileContentResponse { contents: "".to_string() });
+    }
+    if READ_FILE_CH.try_send(file.file).is_err() {
+        // return (StatusCode::SERVICE_UNAVAILABLE, "System Busy");
+        return picoserve::response::Json(FileContentResponse { contents: "".to_string() });
+    }
+    
+    Timer::after_millis(100).await;
+    let contents = READ_FILE_CONTENTS.receive().await;
+
+    picoserve::response::Json(FileContentResponse { contents })
 }
 
 async fn handle_get_status() -> impl picoserve::response::IntoResponse {
@@ -97,7 +126,6 @@ async fn handle_wifi_config(
 }
 
 async fn handle_list_files() -> impl picoserve::response::IntoResponse {
-    info!("Sending file list");
     unsafe {
         crate::services::sd_monitor::FILES.lock_mut(|f| {
             let mut files = Vec::new();

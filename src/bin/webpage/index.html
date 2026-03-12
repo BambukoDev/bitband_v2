@@ -15,6 +15,23 @@
         #status { margin-top: 20px; color: #ff9800; font-weight: bold; min-height: 1.2em; }
         .file-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 15px; }
         .loader { color: #888; font-style: italic; }
+        .file-item { 
+                display: flex; 
+                background: #2c2c2c; 
+                border-radius: 5px; 
+                margin: 5px;
+                border: 1px solid #444;
+                overflow: hidden; /* Keeps corners rounded */
+            }
+            .btn-run { flex-grow: 1; margin: 0 !important; border-radius: 5px 0 0 5px !important; width: auto !important; }
+            .btn-edit { 
+                background: #ff9800 !important; 
+                width: 70px !important; 
+                margin: 0 !important; 
+                border-radius: 0 5px 5px 0 !important; 
+                font-size: 0.8em !important;
+                color: black !important;
+            }
     </style>
 </head>
 <body>
@@ -40,19 +57,74 @@
 
     <p id="status">System Ready</p>
 
+    <div class="card">
+        <h3>Live Script Execution</h3>
+        <textarea id="live-script" style="width: 90%; height: 100px; background: #2c2c2c; color: #00ff00; font-family: monospace; border: 1px solid #444; padding: 10px;" placeholder="STRING Hello World&#10;ENTER"></textarea>
+        <br>
+        <button class="btn-green" onclick="runRaw()">Execute Live</button>
+        <button id="resume-btn" class="btn-blue" style="display:none; background: #f44336;" onclick="resumeScript()">RESUME PAUSED SCRIPT</button>
+    </div>
+
+    <div class="card">
+        <h3>DUCKY CHEATSHEET</h3>
+        <div style="text-align: left; font-size: 0.85em; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div>
+                <p><b>REM [text]</b>: Display text on BitBand</p>
+                <p><b>STRING [text]</b>: Type characters</p>
+                <p><b>STRINGLN [text]</b>: Type + Enter</p>
+                <p><b>DELAY [ms]</b>: Wait (e.g. 500)</p>
+                <p><b>DEFAULT_DELAY [ms]</b>: Global delay</p>
+                <p><b>RANDOM_DELAY [min] [max]</b></p>
+                <p><b>REPEAT [n]</b>: Repeat last line</p>
+            </div>
+            <div>
+                <p><b>HOLD [key]</b>: Stay pressed</p>
+                <p><b>RELEASE</b>: Stop all holds</p>
+                <p><b>PAUSE</b>: Wait for user button</p>
+                <p><b>Combos</b>: CTRL+ALT+DELETE</p>
+                <p><b>Media</b>: VOLUP, VOLDOWN, MUTE</p>
+                <p><b>GUI / WINDOWS</b>: Start Menu</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>SPECIAL KEY REFERENCE</h3>
+        <div style="text-align: left; font-size: 0.85em;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div>
+                    <p><b>System & Nav</b></p>
+                    <ul style="list-style: none; padding: 0; color: #bbb;">
+                        <li><code style="color: #00ff00;">GUI</code> or <code style="color: #00ff00;">WINDOWS</code></li>
+                        <li><code style="color: #00ff00;">ESC</code>, <code style="color: #00ff00;">ENTER</code>, <code style="color: #00ff00;">TAB</code></li>
+                        <li><code style="color: #00ff00;">BACKSPACE</code>, <code style="color: #00ff00;">DELETE</code></li>
+                        <li><code style="color: #00ff00;">UP</code>, <code style="color: #00ff00;">DOWN</code>, <code style="color: #00ff00;">LEFT</code>, <code style="color: #00ff00;">RIGHT</code></li>
+                    </ul>
+                </div>
+                <div>
+                    <p><b>Media & Function</b></p>
+                    <ul style="list-style: none; padding: 0; color: #bbb;">
+                        <li><code style="color: #00ff00;">VOLUP</code>, <code style="color: #00ff00;">VOLDOWN</code>, <code style="color: #00ff00;">MUTE</code></li>
+                        <li><code style="color: #00ff00;">PLAY</code> (Media Play/Pause)</li>
+                        <li><code style="color: #00ff00;">F1</code> through <code style="color: #00ff00;">F12</code></li>
+                        <li><code style="color: #00ff00;">SPACE</code></li>
+                    </ul>
+                </div>
+            </div>
+            <p style="margin-top: 10px; font-size: 0.8em; color: #888; border-top: 1px solid #333; pt: 5px;">
+                <i>Note: Use <b>+</b> for combos (e.g., <code>CTRL+SHIFT+ESC</code>). Use <b>HOLD</b> for persistent states.</i>
+            </p>
+        </div>
+    </div>
+
     <script>
-        // Fetch files from the SD card via the Rust backend
-        async function loadFiles() {
+    async function loadFiles() {
             const listContainer = document.getElementById('payload-list');
             const status = document.getElementById('status');
-            
-            listContainer.innerHTML = '<p class="loader">Loading...</p>';
+            listContainer.innerHTML = '<p class="loader">Scanning SD card...</p>';
             
             try {
-                // This hits the new route you'll add to web.rs
                 const res = await fetch('/list_files');
-                if (!res.ok) throw new Error("Failed to fetch");
-                
                 const data = await res.json();
                 
                 if (!data.files || data.files.length === 0) {
@@ -60,20 +132,61 @@
                     return;
                 }
 
-                listContainer.innerHTML = ''; // Clear loader
-                
+                listContainer.innerHTML = '';
                 data.files.forEach(filename => {
-                    const btn = document.createElement('button');
-                    btn.className = 'btn-blue';
-                    btn.innerText = filename;
-                    btn.onclick = () => run(filename);
-                    listContainer.appendChild(btn);
+                    // Create a container for the button group
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'file-item';
+
+                    // Run Button
+                    const runBtn = document.createElement('button');
+                    runBtn.className = 'btn-blue btn-run';
+                    runBtn.innerText = filename;
+                    runBtn.onclick = () => run(filename);
+
+                    // Edit Button
+                    const editBtn = document.createElement('button');
+                    editBtn.className = 'btn-edit';
+                    editBtn.innerText = 'EDIT';
+                    editBtn.onclick = () => editFile(filename);
+
+                    wrapper.appendChild(runBtn);
+                    wrapper.appendChild(editBtn);
+                    listContainer.appendChild(wrapper);
                 });
-                
                 status.innerText = "File list updated";
             } catch (e) {
                 listContainer.innerHTML = '<p style="color: #f44336;">Error: Could not load file list.</p>';
-                status.innerText = "Connection error";
+            }
+        }
+
+        async function editFile(filename) {
+            const status = document.getElementById('status');
+            const editor = document.getElementById('live-script');
+            status.innerText = `Loading ${filename}...`;
+
+            try {
+                const res = await fetch('/get_file', { 
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file: filename })
+                });
+                
+                if (res.ok) {
+                    // Parse as JSON because web.rs returns FileContentResponse struct
+                    const data = await res.json();
+                    editor.value = data.contents; 
+                    status.innerText = `Loaded ${filename} into editor`;
+                    
+                    // Visual feedback: scroll to editor
+                    editor.scrollIntoView({ behavior: 'smooth' });
+                    editor.focus();
+                } else {
+                    status.innerText = "✖ Failed to read file";
+                }
+            } catch (e) {
+                status.innerText = "✖ Connection error";
+                console.error(e);
             }
         }
 
@@ -81,7 +194,6 @@
             const status = document.getElementById('status');
             status.innerText = `Executing ${file}...`;
             try {
-                // Uses the existing POST /run route
                 const res = await fetch(`/run?file=${encodeURIComponent(file)}`, { method: 'POST' });
                 status.innerText = res.ok ? `✔ Executed: ${file}` : '✖ System Busy or Error';
             } catch (e) { 
@@ -98,7 +210,6 @@
             status.innerText = 'Applying settings...';
 
             try {
-                // Uses the existing POST /configure_wifi route
                 const response = await fetch('/configure_wifi', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -119,7 +230,6 @@
             status.innerText = "Sending form data...";
 
             try {
-                // This helper handles all newlines, spaces, and special symbols
                 const formData = new URLSearchParams();
                 formData.append('script', scriptText);
 
@@ -179,17 +289,6 @@
         setInterval(updateStatus, 500);
 
         window.onload = loadFiles;
-    </script>
-    <div class="card">
-        <h3>Live Script Execution</h3>
-        <textarea id="live-script" style="width: 90%; height: 100px; background: #2c2c2c; color: #00ff00; font-family: monospace; border: 1px solid #444; padding: 10px;" placeholder="STRING Hello World&#10;ENTER"></textarea>
-        <br>
-        <button class="btn-green" onclick="runRaw()">Execute Live</button>
-        <button id="resume-btn" class="btn-blue" style="display:none; background: #f44336;" onclick="resumeScript()">RESUME PAUSED SCRIPT</button>
-    </div>
-
-    <script>
-
     </script>
 </body>
 </html>
