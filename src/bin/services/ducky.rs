@@ -58,7 +58,13 @@ pub static DUCKY_CH: Channel<
     4,
 > = Channel::new();
 
-pub static PAUSE_BUTTON_CH: Channel<
+pub static PAUSE_SCRIPT_CH: Channel<
+    CriticalSectionRawMutex,
+    (),
+    2
+> = Channel::new();
+
+pub static STOP_SCRIPT_CH: Channel<
     CriticalSectionRawMutex,
     (),
     2
@@ -321,6 +327,8 @@ pub async fn read_file_to_string(
 }
 
 async fn execute_full_script(content: &str, rng_state: &mut u32) {
+    STOP_SCRIPT_CH.clear();
+    PAUSE_SCRIPT_CH.clear();
     DUCKY_STATE.store(1, Ordering::Relaxed);
     let mut default_delay: u32 = 0;
     let mut last_cmd: Option<DuckCmd> = None;
@@ -330,6 +338,11 @@ async fn execute_full_script(content: &str, rng_state: &mut u32) {
         if line.is_empty() { continue; }
 
         if let Some(cmd) = parse_ducky_line(line) {
+            if STOP_SCRIPT_CH.try_receive().is_ok() {
+                DUCKY_STATE.store(0, Ordering::Relaxed);
+                return;
+            }
+
             match cmd.clone() {
                 DuckCmd::Repeat(n) => {
                     if let Some(prev) = &last_cmd {
@@ -437,7 +450,7 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
             let mut text: heapless::String<64> = heapless::String::new();
             let _ = text.push_str("PAUSED");
             TOP_BAR_CH.send(TopBarMode::Message { text }).await;
-            PAUSE_BUTTON_CH.receive().await;
+            PAUSE_SCRIPT_CH.receive().await;
             DUCKY_STATE.store(1, Ordering::Relaxed);
         }
 

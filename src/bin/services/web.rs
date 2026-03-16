@@ -18,7 +18,7 @@ use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
 use alloc::string::{String, ToString};
 use crate::services::wifi::{WifiMode, WIFI_MODE_SIGNAL};
-use crate::services::ducky::{DIRECT_EXEC_CH, DUCKY_CH, DUCKY_STATE, PAUSE_BUTTON_CH, READ_FILE_CH, READ_FILE_CONTENTS};
+use crate::services::ducky::{DIRECT_EXEC_CH, DUCKY_CH, DUCKY_STATE, PAUSE_SCRIPT_CH, READ_FILE_CH, READ_FILE_CONTENTS, STOP_SCRIPT_CH};
 
 #[derive(serde::Deserialize)]
 struct RunQuery {
@@ -66,9 +66,14 @@ fn make_router() -> Router<impl picoserve::routing::PathRouter> {
         .route("/configure_wifi", post(handle_wifi_config)) 
         .route("/list_files", get(handle_list_files))
         .route("/get_file", post(handle_get_file))
+        .route("/stop", post(handle_stop))
 }
 
-// IMPL for get_file
+async fn handle_stop() -> impl picoserve::response::IntoResponse {
+    let _ = STOP_SCRIPT_CH.try_send(());
+    (StatusCode::OK, "Stopped script")
+}
+
 async fn handle_get_file(
     Json(file): Json<ReadQuery>
 ) -> impl picoserve::response::IntoResponse {
@@ -112,7 +117,7 @@ async fn handle_run_raw(
 }
 
 async fn handle_resume() -> impl picoserve::response::IntoResponse {
-    let _ = PAUSE_BUTTON_CH.try_send(());
+    let _ = PAUSE_SCRIPT_CH.try_send(());
     (StatusCode::OK, "Resumed")
 }
 

@@ -63,6 +63,7 @@
         <br>
         <button class="btn-green" onclick="runRaw()">Execute Live</button>
         <button id="resume-btn" class="btn-blue" style="display:none; background: #f44336;" onclick="resumeScript()">RESUME PAUSED SCRIPT</button>
+        <button id="stop-btn" class="btn-blue" style="background: #f44336;" onclick="stopScript()">⚠ STOP ⚠</button>
     </div>
 
     <div class="card">
@@ -118,7 +119,7 @@
     </div>
 
     <script>
-    async function loadFiles() {
+        async function loadFiles() {
             const listContainer = document.getElementById('payload-list');
             const status = document.getElementById('status');
             listContainer.innerHTML = '<p class="loader">Scanning SD card...</p>';
@@ -261,6 +262,14 @@
                     document.getElementById('resume-btn').style.display = 'none';
                 }
             } catch (e) { console.error("Resume failed", e); }
+        }
+
+        async function stopScript() {
+            try {
+                const res = await fetch('/stop', {
+                    method: 'POST'
+                });
+            } catch (e) { console.error("Stop failed", e); }
         }
 
         async function updateStatus() {

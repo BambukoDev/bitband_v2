@@ -6,7 +6,8 @@ use embassy_sync::{
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio;
 
-use crate::services::ducky::PAUSE_BUTTON_CH;
+use crate::services::ducky::PAUSE_SCRIPT_CH;
+use defmt::{info, warn, error};
 
 const DEBOUNCE_MS: u64 = 30;
 const LONG_PRESS_MS: u64 = 600;
@@ -33,14 +34,17 @@ pub async fn button_task(
     loop {
         if up.is_low() {
             BUTTON_CH.send(ButtonEvent::Up).await;
+            // info!("BUTTON UP");
             Timer::after(Duration::from_millis(200)).await;
         }
         if down.is_low() {
             BUTTON_CH.send(ButtonEvent::Down).await;
+            // info!("BUTTON DOWN");
             Timer::after(Duration::from_millis(200)).await;
         }
         if select.is_low() {
             Timer::after(Duration::from_millis(DEBOUNCE_MS)).await;
+            // info!("BUTTON SELECT");
             if select.is_low() {
                 handle_select_press(&mut select).await;
             }
@@ -60,7 +64,7 @@ async fn handle_select_press(btn: &mut gpio::Input<'static>) {
         elapsed += POLL_MS;
 
         if elapsed >= LONG_PRESS_MS && !long_sent {
-            PAUSE_BUTTON_CH.send(()).await;
+            PAUSE_SCRIPT_CH.send(()).await;
             BUTTON_CH.send(ButtonEvent::Back).await;
             long_sent = true;
         }
