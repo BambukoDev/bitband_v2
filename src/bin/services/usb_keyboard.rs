@@ -1,9 +1,7 @@
 use embassy_executor::task;
 use embassy_time::Timer;
-use embassy_usb::class::cdc_acm::CdcAcmClass;
 use embassy_usb::{Builder, Config as UsbDeviceConfig};
 use embassy_usb::class::hid::{HidReaderWriter, State};
-use embassy_usb::driver::EndpointError;
 use embassy_futures::join::join;
 use static_cell::StaticCell;
 
@@ -15,7 +13,6 @@ static EP_OUT_BUFFER: StaticCell<[u8; 256]> = StaticCell::new();
 static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-static USB_DRIVER: StaticCell<EspUsbDriver<'static>> = StaticCell::new();
 
 #[task]
 pub async fn usb_keyboard_task(usb_peripheral: Usb<'static>) {
@@ -70,7 +67,7 @@ pub async fn usb_keyboard_task(usb_peripheral: Usb<'static>) {
                     // This will wait/retry if the USB is not ready
                     match writer.write(&packet).await {
                         Ok(_) => (),
-                        Err(e) => {
+                        Err(_e) => {
                             Timer::after_millis(500).await;
                         }
                     }

@@ -1,14 +1,12 @@
-use bt_hci::cmd::info;
 use embassy_time::{Duration, Timer};
 use esp_hal_dhcp_server::{simple_leaser::SingleDhcpLeaser, structs::DhcpServerConfig};
-use esp_radio::wifi::{AccessPointConfig, ClientConfig, Config as RadioConfig, ModeConfig, Protocol, WifiController, WifiDevice, WifiMode as RadioWifiMode};
-use embassy_net::{Config, DhcpConfig, IpAddress, Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
+use esp_radio::wifi::{AccessPointConfig, ClientConfig, ModeConfig, WifiController, WifiDevice};
+use embassy_net::{DhcpConfig, Ipv4Address, Runner, Stack, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use defmt::{info,error};
 use alloc::string::{String, ToString};
-use esp_println::println;
-use core::{fmt::Write, str::FromStr};
+use core::fmt::Write;
 
 use crate::ui;
 
@@ -52,7 +50,7 @@ pub async fn wifi_task(
                 controller.set_config(&ModeConfig::AccessPoint(ap_config)).unwrap();
                 controller.start().unwrap();
 
-                for i in 1..=5 {
+                for _i in 1..=5 {
                     if ap_stack.is_link_up() {
                         info!("AP Started");
                     }
@@ -84,7 +82,7 @@ pub async fn wifi_task(
 
                 Timer::after_secs(1).await;
 
-                for i in 1..=40 {
+                for _i in 1..=40 {
                     if sta_stack.is_link_up() {
                         if let Some(config) = sta_stack.config_v4() {
                             let ip = config.address.address();
@@ -101,7 +99,7 @@ pub async fn wifi_task(
                     }
                     Timer::after_millis(500).await;
                 }
-                if (!sta_stack.is_link_up()) {
+                if !sta_stack.is_link_up()  {
                     error!("Failed to connect :(");
                 }
             }

@@ -1,26 +1,20 @@
-use alloc::borrow::ToOwned;
 use alloc::string::String;
-use alloc::string::ToString;
 use embassy_sync::channel::Channel;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
 use embedded_hal_bus::spi::RefCellDevice;
-use embedded_sdmmc::filesystem::ToShortFileName;
 use embedded_sdmmc::SdCard;
 use esp_hal::gpio::Output;
-use esp_hal::spi;
 use esp_hal::Blocking;
 use smart_leds::RGB;
-use static_cell::StaticCell;
 use crate::services::hid::*;
 use crate::services::keyboard::*;
 use crate::DummyTime;
 use crate::ui::file_browser::MAX_NAME;
 use embassy_executor::task;
 use embassy_time::{Duration, Timer};
-use embedded_sdmmc::{VolumeManager, TimeSource};
-use defmt::{error, info, warn};
-use alloc::{boxed::Box, vec::Vec};
+use embedded_sdmmc::VolumeManager;
+use defmt::info;
+use alloc::vec::Vec;
 
 use core::cell::RefCell;
 use core::sync::atomic::AtomicU8;
@@ -85,8 +79,6 @@ pub static DUCKY_STATE: AtomicU8 = AtomicU8::new(0);
 pub static READ_FILE_CH: Channel<CriticalSectionRawMutex, String, 1> = Channel::new();
 pub static READ_FILE_CONTENTS: Channel<CriticalSectionRawMutex, String, 1> = Channel::new();
 
-static mut LAST_CMD: Option<DuckCmd> = None;
-
 const KEY_PRESS_MS: u64 = 15;
 const KEY_RELEASE_MS: u64 = 8;
 
@@ -114,6 +106,7 @@ fn key_from_name(name: &str) -> Option<u8> {
         "LEFT" => Some(KEY_LEFT),
         "RIGHT" => Some(KEY_RIGHT),
 
+        // FUNCTION KEYS
         "F1" => Some(KEY_F1),
         "F2" => Some(KEY_F2),
         "F3" => Some(KEY_F3),
@@ -126,6 +119,15 @@ fn key_from_name(name: &str) -> Option<u8> {
         "F10" => Some(KEY_F10),
         "F11" => Some(KEY_F11),
         "F12" => Some(KEY_F12),
+
+        // MEDIA CONTROL
+        "MUTE" => Some(KEY_MUTE),
+        "VOLUME_UP" => Some(KEY_VOLUME_UP),
+        "VOLUME_DOWN" => Some(KEY_VOLUME_DOWN),
+        "MEDIA_PLAYPAUSE" => Some(KEY_MEDIA_PLAYPAUSE),
+        "MEDIA_STOP" => Some(KEY_MEDIA_STOP),
+        "MEDIA_NEXTSONG" => Some(KEY_MEDIA_NEXTSONG),
+        "MEDIA_PREVSONG" => Some(KEY_MEDIA_PREVSONG),
 
         _ => None,
     }
@@ -304,13 +306,13 @@ pub async fn read_file_to_string(
 
     let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).ok()?;
     let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
-    let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
+    let volume_mgr = VolumeManager::new(sdcard, DummyTime);
 
-    let mut volume = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).ok()?;
+    let volume = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)).ok()?;
     let root = volume.open_root_dir().ok()?;
     let ducky_dir = root.open_dir("DUCKY").ok()?;
     
-    let mut file = ducky_dir.open_file_in_dir(
+    let file = ducky_dir.open_file_in_dir(
         filename,
         embedded_sdmmc::Mode::ReadOnly,
     ).ok()?;
@@ -458,23 +460,7 @@ async fn execute_ducky_cmd(cmd: DuckCmd) {
 
         DuckCmd::Repeat(_) => {}
 
-        DuckCmd::Key { modifier, keys } => {
-            // Merge with currently held keys
-            let mut report = CURRENT_REPORT.lock(|cell| *cell.borrow());
-            report.modifier |= modifier;
-            for (i, k) in keys.iter().enumerate().take(6) {
-                report.keys[i] = *k; 
-            }
-            
-            HID_CH.send(report).await;
-            Timer::after(Duration::from_millis(KEY_PRESS_MS)).await;
-            
-            // Return to the "Hold" state
-            sync_hid().await;
-            Timer::after(Duration::from_millis(KEY_RELEASE_MS)).await;
-        }
-
-        DuckCmd::RandomDelay(min, max) => {
+        DuckCmd::RandomDelay(_min, _max) => {
             // handled by executor
         }
     }

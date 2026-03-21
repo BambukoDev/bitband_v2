@@ -39,18 +39,6 @@ pub const KEY_MEDIA_STOP: u8      = 0xE9;
 pub const KEY_MEDIA_NEXTSONG: u8  = 0xEA;
 pub const KEY_MEDIA_PREVSONG: u8  = 0xEB;
 
-pub struct KeyState {
-    pub modifier: u8,
-    pub keys: [u8; 6],
-}
-
-impl KeyState {
-    pub const fn new() -> Self {
-        Self { modifier: 0, keys: [0; 6] }
-    }
-}
-
-
 #[derive(Copy, Clone)]
 pub struct KeyReport {
     pub modifier: u8,

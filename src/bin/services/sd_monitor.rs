@@ -4,25 +4,19 @@ use embedded_hal_bus::spi::RefCellDevice;
 use embedded_sdmmc::SdCard;
 use embedded_sdmmc::VolumeManager;
 use esp_hal::gpio::Output;
-use esp_hal::gpio::OutputConfig;
 use esp_hal::Blocking;
-use esp_hal::DriverMode;
 use heapless::Vec;
-use heapless::String;
 use defmt::{info, error};
 use esp_println as _;
 use esp_hal::gpio::Input;
 use embassy_time::{Duration, Timer};
-use smart_leds::RGB;
 use core::fmt::Write;
 
 use core::cell::RefCell;
 use esp_hal::spi::master::Spi;
 
 use crate::ui::file_browser::{FileEntry, FileMenu, MAX_FILES, MAX_NAME};
-use crate::services::led::*;
 use crate::DummyTime;
-use esp_println::println;
 
 pub static FILES: Mutex<CriticalSectionRawMutex, Vec<FileEntry, MAX_FILES>> = Mutex::new(Vec::<FileEntry, MAX_FILES>::new());
 
@@ -52,13 +46,13 @@ pub async fn sd_monitor_task(
             let mut cs_borrow = cs_pin.borrow_mut();
             
             let spi_device = RefCellDevice::new(spi_bus, &mut *cs_borrow, esp_hal::delay::Delay::new()).expect("Failed to create SPI device!");
-            let mut sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
+            let sdcard = SdCard::new(spi_device, esp_hal::delay::Delay::new());
 
             match sdcard.num_bytes() {
                 Ok(size) => {
                     info!("[SD] Card Initialized: {} MB", size / 1024 / 1024);
-                    let mut volume_mgr = VolumeManager::new(sdcard, DummyTime);
-                    if let Ok(mut volume) = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
+                    let volume_mgr = VolumeManager::new(sdcard, DummyTime);
+                    if let Ok(volume) = volume_mgr.open_volume(embedded_sdmmc::VolumeIdx(0)) {
                         // Attempt to mount and read files
                         if let Ok(root) = volume.open_root_dir() {
                             if let Ok(ducky_dir) = root.open_dir("DUCKY") {

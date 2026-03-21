@@ -107,7 +107,7 @@ async fn gatt_events_task<P: PacketPool>(
                 match &event {
                     GattEvent::Read(event) => {
                         if event.handle() == sensor_data.handle {
-                            let value = server.get(&sensor_data);
+                            let _value = server.get(&sensor_data);
                             info!(
                                 "[gatt] Read Event to Sensor Data Characteristic"
                             );
@@ -127,7 +127,7 @@ async fn gatt_events_task<P: PacketPool>(
                 // in order to ensure reply is sent.
                 match event.accept() {
                     Ok(reply) => reply.send().await,
-                    Err(e) => warn!("[gatt] error sending response"),
+                    Err(_e) => warn!("[gatt] error sending response"),
                 };
             }
             _ => {} // ignore other Gatt Connection Events

@@ -1,19 +1,18 @@
-use core::error;
 use core::sync::atomic::Ordering;
 
 use alloc::vec::Vec;
 use embassy_net::{tcp::TcpSocket, Stack};
 use embassy_time::{Duration, Timer};
-use picoserve::extract::{Form, Json, Query};
+use picoserve::extract::{Form, Json};
 use picoserve::routing::get_service;
 use picoserve::{
     routing::get,
     routing::post,
     Config, Router,
-    Server, Timeouts,
+    Server,
 };
-use defmt::{info, error, warn};
-use picoserve::response::{Directory, File, StatusCode};
+use defmt::error;
+use picoserve::response::{File, StatusCode};
 use crate::services::nvs;
 use crate::ui::menu_core::MAX_NAME;
 use alloc::string::{String, ToString};

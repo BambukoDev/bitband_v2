@@ -1,7 +1,6 @@
 use heapless::String;
 
 pub const MAX_NAME: usize = 32;
-pub const MENU_DEPTH_MAX: usize = 4;
 
 #[derive(Clone)]
 pub enum Action {

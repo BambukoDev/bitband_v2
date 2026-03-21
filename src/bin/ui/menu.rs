@@ -1,35 +1,21 @@
-use embassy_sync::mutex::Mutex;
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     channel::Channel,
-    signal::Signal,
 };
 use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::primitives::PrimitiveStyleBuilder;
-use embedded_graphics::primitives::Rectangle;
-use esp_radio::wifi::ScanConfig;
-use esp_radio::wifi::WifiController;
 use ssd1306::{prelude::*, mode::BufferedGraphicsMode};
-use esp_hal::i2c;
-use esp_hal::peripherals::{self, WIFI};
-use ssd1306::{mode::TerminalMode, prelude::*, I2CDisplayInterface, Ssd1306, command};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text}
 };
-use defmt::{info, warn, error};
+use defmt::{info, error};
 
-use alloc::vec::Vec;
-use alloc::boxed::Box;
-use alloc::vec;
 use static_cell::StaticCell;
 
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::button::*;
-use crate::top_bar::{TopBarMode, TOP_BAR_CH, draw_text_at};
 use crate::services::ducky::DUCKY_CH;
 use crate::ui::menu_core::*;
 use crate::ui::file_browser::*;

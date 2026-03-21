@@ -1,10 +1,5 @@
-use alloc::vec::Vec;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 
 use crate::services::hid::*;
-use embassy_executor::task;
-use embassy_time::{Duration, Timer};
-use trouble_host::prelude::*;
 
 pub fn ascii_to_key(c: u8) -> (u8, u8) {
     match c {

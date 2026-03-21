@@ -1,7 +1,7 @@
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use esp_hal_smartled::SmartLedsAdapter;
-use smart_leds::{brightness, colors, SmartLedsWrite as _, RGB};
+use smart_leds::{SmartLedsWrite as _, RGB};
 
 pub enum LedState {
     Off,

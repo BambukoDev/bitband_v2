@@ -1,13 +1,11 @@
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     channel::Channel,
-    signal::Signal,
 };
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio;
 
 use crate::services::ducky::PAUSE_SCRIPT_CH;
-use defmt::{info, warn, error};
 
 const DEBOUNCE_MS: u64 = 30;
 const LONG_PRESS_MS: u64 = 600;
@@ -27,8 +25,8 @@ pub static BUTTON_CH: Channel<CriticalSectionRawMutex, ButtonEvent, 4> =
 
 #[embassy_executor::task]
 pub async fn button_task(
-    mut up: gpio::Input<'static>,
-    mut down: gpio::Input<'static>,
+    up: gpio::Input<'static>,
+    down: gpio::Input<'static>,
     mut select: gpio::Input<'static>
 ) {
     loop {

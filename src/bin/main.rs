@@ -8,46 +8,33 @@
 // #![deny(clippy::large_stack_frames)]
 pub const L2CAP_MTU: usize = 255;
 
-use core::{cell::RefCell, default, net::Ipv4Addr};
+use core::cell::RefCell;
 
-use embedded_hal::{digital::{InputPin, OutputPin}, spi::{ErrorType, SpiBus}};
-use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, ledc::channel, otg_fs::{asynch::Driver, Usb, UsbBus}, peripherals, spi, DriverMode};
+use esp_hal::{gpio::{self, Input, InputConfig, OutputConfig, Pull}, i2c, otg_fs::Usb, spi};
 
-use bt_hci::{cmd::info, controller::ExternalController};
+use bt_hci::controller::ExternalController;
 // use log::{error, info};
-use defmt::{info, error};
+use defmt::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::rmt::Rmt;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::{SmartLedsAdapter, smart_led_buffer};
 use esp_println as _;
-use esp_println::println;
-use esp_radio::{ble::controller::BleConnector, wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice}};
+use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
 
-use embassy_net::{Stack, StackResources, Config, IpAddress, Ipv4Address, Ipv4Cidr};
-use smart_leds::{brightness, colors, SmartLedsWrite as _};
+use embassy_net::{Stack, StackResources};
 
-use ssd1306::{mode::TerminalMode, prelude::*, I2CDisplayInterface, Ssd1306, command};
-use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    text::{Baseline, Text}
-};
+use ssd1306::{prelude::*, I2CDisplayInterface, Ssd1306};
 
 use embedded_sdmmc::{SdCard, TimeSource, VolumeManager};
-use esp_hal::spi::master::Spi;
 use esp_hal::gpio::Output;
 use esp_hal::time::Rate;
 use embedded_hal_bus::spi::RefCellDevice;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::boxed::Box;
 
-use embassy_usb::class::hid::{HidWriter, HidReader, ReportId};
-use embassy_usb::Builder;
 
 mod input;
 mod services;
@@ -55,17 +42,13 @@ mod ui;
 
 use input::button;
 
-use services::battery;
-use services::clock;
 
-use ui::menu;
 use ui::top_bar;
 
-use embedded_hal_bus::spi::ExclusiveDevice;
 
 use esp_backtrace as _;
 
-use crate::services::{bluetooth::run, sd_monitor::sd_monitor_task};
+use crate::services::sd_monitor::sd_monitor_task;
 use crate::services::*;
 
 // Replaced by esp_backtrace
@@ -115,14 +98,14 @@ async fn main(spawner: Spawner) {
 
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
-    let ble_controller = ExternalController::<_, 20>::new(transport);
+    let _ble_controller = ExternalController::<_, 20>::new(transport);
 
     let usb = Usb::new(peripherals.USB0, peripherals.GPIO20, peripherals.GPIO19);
 
-    let mut pulse_code = Box::leak(Box::new(smart_led_buffer!(1)));
+    let pulse_code = Box::leak(Box::new(smart_led_buffer!(1)));
     let frequency = Rate::from_mhz(80);
     let rmt = Rmt::new(peripherals.RMT, frequency).expect("Failed to initialize RMT0");
-    let mut led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO38, pulse_code);
+    let led = SmartLedsAdapter::new(rmt.channel0, peripherals.GPIO38, pulse_code);
     info!("RGB light initialized!");
 
     let disp_top_i2c = i2c::master::I2c::new(peripherals.I2C0, i2c::master::Config::default())

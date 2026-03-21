@@ -5,18 +5,13 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::text::renderer::CharacterStyle;
 use ssd1306::{prelude::*, mode::BufferedGraphicsMode};
-use esp_hal::i2c;
-use esp_hal::peripherals;
-use ssd1306::{mode::TerminalMode, prelude::*, I2CDisplayInterface, Ssd1306, command};
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     text::{Baseline, Text}
 };
-use defmt::info;
 
 use alloc::format;
 
@@ -84,7 +79,7 @@ pub async fn status_task(mut display: Display) {
         display.clear_buffer();
 
         match state {
-            TopBarMode::Normal { battery_percent, time_hhmm } => {
+            TopBarMode::Normal { battery_percent: _, time_hhmm: _ } => {
                 BatteryWidget.draw(&mut display, tick, style);
                 ClockWidget.draw(&mut display, tick, style);
             }

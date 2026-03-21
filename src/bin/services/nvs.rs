@@ -43,7 +43,7 @@ pub fn load_wifi_credentials() -> Option<WifiConfig> {
     };
     let password = nvs.get::<String>(&namespace, &Key::from_str("pass")).expect("Failed to get pass");
 
-    let mut config = WifiConfig {
+    let config = WifiConfig {
         ssid,
         password, 
     };

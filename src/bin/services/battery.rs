@@ -1,10 +1,4 @@
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    channel::Channel,
-    signal::Signal,
-};
 use embassy_time::{Duration, Timer};
-use esp_hal::gpio;
 use crate::top_bar::StatusBar;
 use crate::top_bar::{TopBarMode, TOP_BAR_CH};
 

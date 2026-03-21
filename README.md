@@ -14,3 +14,5 @@ It's sort of a BadUSB-style device, just bigger than a pendrive, but also (I thi
   - [x] WiFi local connection
 - [x] Script parser
 - [x] Inline website parser
+
+## Pinout
